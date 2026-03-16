@@ -2,6 +2,18 @@
 name = "ddcleaner"
 version = "1.0.0"
 edition = "2021"
+description = "Blazing fast disk usage analyzer with web UI"
+license = "MIT"
+repository = "https://github.com/nkarasiak/ddcleaner"
+
+[package.metadata.deb]
+maintainer = "nkarasiak"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/ddcleaner", "usr/bin/", "755"],
+]
+extended-description = "Read-only disk usage analyzer with treemap visualization, folder explorer, and smart cleanup suggestions."
 
 [dependencies]
 axum = "0.8"
