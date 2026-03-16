@@ -821,9 +821,9 @@
         }
     });
 
-    $('ctxInfo').addEventListener('click', () => {
+    $('ctxDelete').addEventListener('click', () => {
         if (ctxTarget) {
-            alert(`Name: ${ctxTarget.name}\nPath: ${ctxTarget.path}\nSize: ${ctxTarget.size_human}\nType: ${ctxTarget.has_children ? 'Directory' : 'File'}`);
+            confirmDelete(ctxTarget.path, ctxTarget.name, ctxTarget.size_human);
         }
     });
 
@@ -901,18 +901,228 @@
         if (e.target === smartOverlay) smartOverlay.classList.remove('open');
     });
 
+    // --- Search command palette (Ctrl+K) ---
+    const searchOverlay = $('searchOverlay');
+    const searchInput2 = $('searchInput');
+    const searchResults = $('searchResults');
+    let searchDebounce = null;
+
+    function openSearch() {
+        searchOverlay.classList.add('open');
+        searchInput2.value = '';
+        searchResults.innerHTML = '<div class="search-empty">Type to search files and folders</div>';
+        setTimeout(() => searchInput2.focus(), 50);
+    }
+
+    function closeSearch() {
+        searchOverlay.classList.remove('open');
+    }
+
+    searchInput2.addEventListener('input', () => {
+        clearTimeout(searchDebounce);
+        const q = searchInput2.value.trim();
+        if (q.length < 2) {
+            searchResults.innerHTML = '<div class="search-empty">Type at least 2 characters</div>';
+            return;
+        }
+        searchDebounce = setTimeout(async () => {
+            try {
+                const resp = await fetch('/api/search?q=' + encodeURIComponent(q) + '&limit=30');
+                if (!resp.ok) return;
+                const results = await resp.json();
+                searchResults.innerHTML = '';
+                if (results.length === 0) {
+                    searchResults.innerHTML = '<div class="search-empty">No results</div>';
+                    return;
+                }
+                results.forEach(item => {
+                    const el = document.createElement('div');
+                    el.className = 'search-item';
+
+                    const icon = document.createElement('span');
+                    icon.className = 'search-item-icon';
+                    icon.textContent = item.has_children ? '📁' : '📄';
+
+                    const info = document.createElement('div');
+                    info.className = 'search-item-info';
+                    const name = document.createElement('div');
+                    name.className = 'search-item-name';
+                    name.textContent = item.name;
+                    const path = document.createElement('div');
+                    path.className = 'search-item-path';
+                    path.textContent = item.path;
+                    info.appendChild(name);
+                    info.appendChild(path);
+
+                    const size = document.createElement('span');
+                    size.className = 'search-item-size';
+                    size.textContent = item.size_human;
+
+                    el.appendChild(icon);
+                    el.appendChild(info);
+                    el.appendChild(size);
+
+                    el.addEventListener('click', () => {
+                        closeSearch();
+                        if (item.has_children) {
+                            navigateTo(item.path);
+                        } else {
+                            // Navigate to parent
+                            const parts = item.path.split('/');
+                            parts.pop();
+                            navigateTo(parts.join('/') || '/');
+                        }
+                    });
+
+                    searchResults.appendChild(el);
+                });
+            } catch (e) {}
+        }, 200);
+    });
+
+    searchOverlay.addEventListener('click', e => {
+        if (e.target === searchOverlay) closeSearch();
+    });
+
+    $('searchHint').addEventListener('click', openSearch);
+
+    // --- File types ---
+    const typesOverlay = $('typesOverlay');
+    const typesList = $('typesList');
+
+    async function openTypes() {
+        typesOverlay.classList.add('open');
+        typesList.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center">Loading...</div>';
+        try {
+            const resp = await fetch('/api/types');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            typesList.innerHTML = '';
+            const maxSize = data.types.length > 0 ? data.types[0].size : 1;
+            data.types.slice(0, 50).forEach(t => {
+                const el = document.createElement('div');
+                el.className = 'type-item';
+
+                const ext = document.createElement('span');
+                ext.className = 'type-ext';
+                ext.textContent = '.' + t.extension;
+
+                const barWrap = document.createElement('div');
+                barWrap.className = 'type-bar-wrap';
+                const bar = document.createElement('div');
+                bar.className = 'type-bar';
+                bar.style.width = Math.max(1, (t.size / maxSize) * 100) + '%';
+                barWrap.appendChild(bar);
+
+                const meta = document.createElement('span');
+                meta.className = 'type-meta';
+                meta.innerHTML = t.size_human + '<br><span class="type-count">' + formatNum(t.count) + ' files</span>';
+
+                el.appendChild(ext);
+                el.appendChild(barWrap);
+                el.appendChild(meta);
+                typesList.appendChild(el);
+            });
+        } catch (e) {
+            typesList.innerHTML = '<div style="padding:20px;color:var(--accent-red)">Failed to load</div>';
+        }
+    }
+
+    $('typesBtn').addEventListener('click', openTypes);
+    $('typesClose').addEventListener('click', () => typesOverlay.classList.remove('open'));
+    typesOverlay.addEventListener('click', e => {
+        if (e.target === typesOverlay) typesOverlay.classList.remove('open');
+    });
+
+    // --- Delete confirmation ---
+    const deleteOverlay = $('deleteOverlay');
+    let pendingDeletePath = null;
+
+    function confirmDelete(path, name, sizeHuman) {
+        pendingDeletePath = path;
+        $('deleteMsg').textContent = `${name} (${sizeHuman})\n${path}`;
+        deleteOverlay.classList.add('open');
+    }
+
+    $('deleteCancel').addEventListener('click', () => {
+        deleteOverlay.classList.remove('open');
+        pendingDeletePath = null;
+    });
+
+    $('deleteConfirm').addEventListener('click', async () => {
+        if (!pendingDeletePath) return;
+        const btn = $('deleteConfirm');
+        btn.textContent = 'Deleting...';
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: pendingDeletePath })
+            });
+            const result = await resp.json();
+            if (result.success) {
+                deleteOverlay.classList.remove('open');
+                // Rescan current view
+                fetchTree(currentPath);
+            } else {
+                alert('Delete failed: ' + result.message);
+            }
+        } catch (e) {
+            alert('Delete failed: ' + e.message);
+        }
+        btn.textContent = 'Delete permanently';
+        btn.disabled = false;
+        pendingDeletePath = null;
+    });
+
+    deleteOverlay.addEventListener('click', e => {
+        if (e.target === deleteOverlay) {
+            deleteOverlay.classList.remove('open');
+            pendingDeletePath = null;
+        }
+    });
+
+    // --- Theme toggle (light/dark) ---
+    const themeToggle = $('themeToggle');
+    const themeIcon = $('themeIcon');
+    let isDark = localStorage.getItem('ddcleaner-theme') !== 'light';
+
+    function applyTheme() {
+        document.body.classList.toggle('light', !isDark);
+        themeIcon.textContent = isDark ? '\u263E' : '\u2600';
+        localStorage.setItem('ddcleaner-theme', isDark ? 'dark' : 'light');
+    }
+
+    // Respect system preference on first visit
+    if (!localStorage.getItem('ddcleaner-theme')) {
+        isDark = !window.matchMedia('(prefers-color-scheme: light)').matches;
+    }
+    applyTheme();
+
+    themeToggle.addEventListener('click', () => {
+        isDark = !isDark;
+        applyTheme();
+        // Redraw treemap with updated colors
+        requestAnimationFrame(() => layoutTreemap());
+    });
+
     // --- Keyboard ---
     document.addEventListener('keydown', e => {
+        // Ctrl+K / Cmd+K: search
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            e.preventDefault();
+            openSearch();
+            return;
+        }
+
         // Close overlays
         if (e.key === 'Escape') {
-            if (smartOverlay.classList.contains('open')) {
-                smartOverlay.classList.remove('open');
-                return;
-            }
-            if (shortcutsOverlay.classList.contains('open')) {
-                shortcutsOverlay.classList.remove('open');
-                return;
-            }
+            if (searchOverlay.classList.contains('open')) { closeSearch(); return; }
+            if (deleteOverlay.classList.contains('open')) { deleteOverlay.classList.remove('open'); return; }
+            if (typesOverlay.classList.contains('open')) { typesOverlay.classList.remove('open'); return; }
+            if (smartOverlay.classList.contains('open')) { smartOverlay.classList.remove('open'); return; }
+            if (shortcutsOverlay.classList.contains('open')) { shortcutsOverlay.classList.remove('open'); return; }
             navigateUp();
             return;
         }
@@ -931,15 +1141,10 @@
             return;
         }
 
-        if (e.key === 'r' || e.key === 'R') {
-            rescan();
-            return;
-        }
-
-        if (e.key === 's' || e.key === 'S') {
-            openSmart();
-            return;
-        }
+        if (e.key === 'r' || e.key === 'R') { rescan(); return; }
+        if (e.key === 's' || e.key === 'S') { openSmart(); return; }
+        if (e.key === 'f' || e.key === 'F') { openTypes(); return; }
+        if (e.key === 't' || e.key === 'T') { isDark = !isDark; applyTheme(); requestAnimationFrame(() => layoutTreemap()); return; }
 
         // Layout shortcuts
         if (e.key === '1') { setLayout('explorer'); return; }

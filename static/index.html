@@ -13,10 +13,13 @@
     <div class="status-bar">
         <div class="status-left">
             <span class="logo">ddcleaner</span>
-            <span class="version-badge">v1 read-only</span>
+            <span class="version-badge">v1</span>
             <span class="status-info" id="statusInfo"></span>
         </div>
         <div class="status-right">
+            <button class="theme-toggle" id="themeToggle" title="Toggle theme (T)">
+                <span id="themeIcon">&#9790;</span>
+            </button>
             <div class="freshness" id="freshness">
                 <span class="freshness-dot" id="freshnessDot"></span>
                 <span id="freshnessText"></span>
@@ -33,6 +36,7 @@
                 <button class="layout-btn" data-layout="classic" title="Classic (2)">Classic</button>
                 <button class="layout-btn" data-layout="list" title="List (3)">List</button>
             </div>
+            <button class="types-btn" id="typesBtn" title="File types (F)">&#9638; Types</button>
             <button class="smart-btn" id="smartBtn" title="Smart cleanup (S)">&#9889; Smart</button>
             <button class="rescan-btn" id="rescanBtn" title="Rescan (R)">&#8635; Rescan</button>
         </div>
@@ -41,7 +45,7 @@
     <!-- Landing page -->
     <div class="landing" id="landing">
         <h1>ddcleaner</h1>
-        <p>Blazing fast disk usage analyzer — read-only, safe by design</p>
+        <p>Blazing fast disk usage analyzer</p>
         <div class="scan-form">
             <input type="text" class="scan-input" id="scanInput" placeholder="/home" value="" autofocus>
             <button class="scan-btn" id="scanBtn">Start Scan</button>
@@ -74,6 +78,8 @@
         <span class="bottom-sep">&middot;</span>
         <span id="statTime"></span>
         <span class="bottom-sep">&middot;</span>
+        <span style="cursor:pointer;color:var(--text-muted)" title="Search (Ctrl+K)" id="searchHint">&#8984;K search</span>
+        <span class="bottom-sep">&middot;</span>
         <span style="cursor:pointer;color:var(--text-muted)" title="Keyboard shortcuts (?)" id="shortcutHint">? shortcuts</span>
     </div>
 
@@ -85,16 +91,28 @@
 
     <!-- Context menu -->
     <div class="context-menu" id="contextMenu">
-        <div class="ctx-item" id="ctxCopyPath">Copy path</div>
-        <div class="ctx-item" id="ctxOpenExplorer">Open in file manager</div>
-        <div class="ctx-item" id="ctxInfo">Show info</div>
+        <div class="ctx-item" id="ctxCopyPath"><span>Copy path</span><span class="ctx-hint">Ctrl+C</span></div>
+        <div class="ctx-item" id="ctxOpenExplorer"><span>Open in file manager</span><span class="ctx-hint">Ctrl+O</span></div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item ctx-danger" id="ctxDelete"><span>Delete</span><span class="ctx-hint">Del</span></div>
+    </div>
+
+    <!-- Search command palette -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-panel">
+            <div class="search-input-wrap">
+                <span class="search-icon">&#128269;</span>
+                <input type="text" class="search-input" id="searchInput" placeholder="Search files and folders..." autocomplete="off" spellcheck="false">
+            </div>
+            <div class="search-results" id="searchResults"></div>
+        </div>
     </div>
 
     <!-- Smart cleanup panel -->
     <div class="smart-overlay" id="smartOverlay">
         <div class="smart-panel">
             <div class="smart-header">
-                <h2>Smart Cleanup Suggestions</h2>
+                <h2>Smart Cleanup</h2>
                 <span class="smart-total" id="smartTotal"></span>
                 <button class="smart-close" id="smartClose">&times;</button>
             </div>
@@ -102,19 +120,42 @@
         </div>
     </div>
 
+    <!-- File types panel -->
+    <div class="smart-overlay" id="typesOverlay">
+        <div class="smart-panel">
+            <div class="smart-header">
+                <h2>File Types</h2>
+                <button class="smart-close" id="typesClose">&times;</button>
+            </div>
+            <div class="smart-list" id="typesList"></div>
+        </div>
+    </div>
+
+    <!-- Delete confirmation -->
+    <div class="smart-overlay" id="deleteOverlay">
+        <div class="delete-confirm">
+            <h3>Confirm Delete</h3>
+            <p id="deleteMsg"></p>
+            <div class="delete-actions">
+                <button class="delete-cancel" id="deleteCancel">Cancel</button>
+                <button class="delete-btn" id="deleteConfirm">Delete permanently</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Keyboard shortcuts overlay -->
     <div class="shortcuts-overlay" id="shortcutsOverlay">
         <div class="shortcuts-card">
             <h2>Keyboard Shortcuts</h2>
+            <div class="shortcut-row"><span>Search</span><span class="shortcut-key">Ctrl+K</span></div>
             <div class="shortcut-row"><span>Navigate into folder</span><span class="shortcut-key">Enter</span></div>
             <div class="shortcut-row"><span>Go up one level</span><span class="shortcut-key">Esc / Backspace</span></div>
-            <div class="shortcut-row"><span>Move selection up</span><span class="shortcut-key">&uarr;</span></div>
-            <div class="shortcut-row"><span>Move selection down</span><span class="shortcut-key">&darr;</span></div>
-            <div class="shortcut-row"><span>Rescan</span><span class="shortcut-key">R</span></div>
-            <div class="shortcut-row"><span>Explorer layout</span><span class="shortcut-key">1</span></div>
-            <div class="shortcut-row"><span>Classic layout</span><span class="shortcut-key">2</span></div>
-            <div class="shortcut-row"><span>List layout</span><span class="shortcut-key">3</span></div>
+            <div class="shortcut-row"><span>Move selection</span><span class="shortcut-key">&uarr; &darr;</span></div>
+            <div class="shortcut-row"><span>Explorer / Classic / List</span><span class="shortcut-key">1 2 3</span></div>
             <div class="shortcut-row"><span>Smart cleanup</span><span class="shortcut-key">S</span></div>
+            <div class="shortcut-row"><span>File types</span><span class="shortcut-key">F</span></div>
+            <div class="shortcut-row"><span>Toggle theme</span><span class="shortcut-key">T</span></div>
+            <div class="shortcut-row"><span>Rescan</span><span class="shortcut-key">R</span></div>
             <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
         </div>
     </div>
