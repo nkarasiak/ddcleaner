@@ -7,7 +7,7 @@ use axum::response::Json;
 use axum::Extension;
 use humansize::{format_size, BINARY};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio_stream::wrappers::IntervalStream;
@@ -378,4 +378,181 @@ pub async fn handle_smart(
         total_size: total,
         total_size_human: format_size(total, BINARY),
     })
+}
+
+// --- Search endpoint ---
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+pub async fn handle_search(
+    Extension(tree): Extension<SharedTree>,
+    Query(query): Query<SearchQuery>,
+) -> Json<Vec<TreeChild>> {
+    let t = tree.read().await;
+    let q = query.q.to_lowercase();
+    let limit = query.limit.unwrap_or(50);
+
+    let mut results: Vec<TreeChild> = Vec::new();
+
+    for node_id in 0..t.nodes.len() {
+        let node = &t.nodes[node_id];
+
+        // Check directory name
+        if node.name.to_lowercase().contains(&q) {
+            let full_path = t.get_full_path(node_id as u32);
+            results.push(TreeChild {
+                name: node.name.clone(),
+                path: full_path,
+                size: node.size,
+                size_human: format_size(node.size, BINARY),
+                percent: 0.0,
+                file_count: node.file_count,
+                dir_count: node.dir_count,
+                has_children: !node.children.is_empty(),
+            });
+        }
+
+        // Check files in this node
+        let dir_path = t.get_full_path(node_id as u32);
+        let dir_path_slash = if dir_path.ends_with('/') {
+            dir_path.clone()
+        } else {
+            format!("{}/", dir_path)
+        };
+        for file in &node.files {
+            if file.name.to_lowercase().contains(&q) {
+                results.push(TreeChild {
+                    name: file.name.clone(),
+                    path: format!("{}{}", dir_path_slash, file.name),
+                    size: file.size,
+                    size_human: format_size(file.size, BINARY),
+                    percent: 0.0,
+                    file_count: 1,
+                    dir_count: 0,
+                    has_children: false,
+                });
+            }
+        }
+    }
+
+    // Sort by size descending and limit
+    results.sort_by(|a, b| b.size.cmp(&a.size));
+    results.truncate(limit);
+
+    Json(results)
+}
+
+// --- Types endpoint ---
+
+#[derive(Serialize)]
+pub struct TypeEntry {
+    pub extension: String,
+    pub count: u64,
+    pub size: u64,
+    pub size_human: String,
+}
+
+#[derive(Serialize)]
+pub struct TypesResponse {
+    pub types: Vec<TypeEntry>,
+}
+
+pub async fn handle_types(
+    Extension(tree): Extension<SharedTree>,
+) -> Json<TypesResponse> {
+    let t = tree.read().await;
+
+    let mut ext_map: HashMap<String, (u64, u64)> = HashMap::new();
+
+    for node in &t.nodes {
+        for file in &node.files {
+            let ext = file
+                .name
+                .rsplit('.')
+                .next()
+                .filter(|e| *e != file.name && !e.is_empty())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_else(|| "(no extension)".to_string());
+            let entry = ext_map.entry(ext).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += file.size;
+        }
+    }
+
+    let mut types: Vec<TypeEntry> = ext_map
+        .into_iter()
+        .map(|(extension, (count, size))| TypeEntry {
+            extension,
+            count,
+            size,
+            size_human: format_size(size, BINARY),
+        })
+        .collect();
+
+    types.sort_by(|a, b| b.size.cmp(&a.size));
+
+    Json(TypesResponse { types })
+}
+
+// --- Delete endpoint ---
+
+#[derive(Deserialize)]
+pub struct DeleteRequest {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct DeleteResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+pub async fn handle_delete(
+    Extension(tree): Extension<SharedTree>,
+    Json(body): Json<DeleteRequest>,
+) -> Result<Json<DeleteResponse>, StatusCode> {
+    let root_path = {
+        let t = tree.read().await;
+        t.root_path.clone()
+    };
+
+    // Canonicalize both paths to prevent traversal attacks
+    let target = std::fs::canonicalize(&body.path).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let root = std::fs::canonicalize(&root_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !target.starts_with(&root) {
+        return Ok(Json(DeleteResponse {
+            success: false,
+            message: "Path is outside the scan root".to_string(),
+        }));
+    }
+
+    // Don't allow deleting the root itself
+    if target == root {
+        return Ok(Json(DeleteResponse {
+            success: false,
+            message: "Cannot delete the scan root".to_string(),
+        }));
+    }
+
+    let result = if target.is_dir() {
+        std::fs::remove_dir_all(&target)
+    } else {
+        std::fs::remove_file(&target)
+    };
+
+    match result {
+        Ok(()) => Ok(Json(DeleteResponse {
+            success: true,
+            message: format!("Deleted: {}", target.display()),
+        })),
+        Err(e) => Ok(Json(DeleteResponse {
+            success: false,
+            message: format!("Failed to delete: {}", e),
+        })),
+    }
 }

@@ -3,7 +3,7 @@ mod embedded;
 mod scanner;
 mod tree;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Extension;
 use axum::Router;
 use clap::Parser;
@@ -57,6 +57,9 @@ async fn main() {
         .route("/api/events", get(api::handle_events))
         .route("/api/open", get(api::handle_open))
         .route("/api/smart", get(api::handle_smart))
+        .route("/api/search", get(api::handle_search))
+        .route("/api/types", get(api::handle_types))
+        .route("/api/delete", post(api::handle_delete))
         .fallback(embedded::static_handler)
         .layer(Extension(shared_tree));
 

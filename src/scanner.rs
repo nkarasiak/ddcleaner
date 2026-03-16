@@ -2,7 +2,7 @@ use crate::tree::{FileEntry, SharedTree};
 use jwalk::WalkDir;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
 const BATCH_SIZE: usize = 1000;
 const PROPAGATE_INTERVAL_MS: u64 = 500;
@@ -11,6 +11,7 @@ struct BatchEntry {
     components: Vec<String>,
     size: u64,
     is_dir: bool,
+    mtime: u64,
 }
 
 pub async fn scan(tree: SharedTree, root_path: String) {
@@ -99,6 +100,7 @@ fn scan_blocking(tree: SharedTree, root_path: &str) {
                         components,
                         size: 0,
                         is_dir: true,
+                        mtime: 0,
                     });
                 }
                 continue;
@@ -122,11 +124,18 @@ fn scan_blocking(tree: SharedTree, root_path: &str) {
             0
         };
         let is_dir = metadata.is_dir();
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         batch.push(BatchEntry {
             components,
             size,
             is_dir,
+            mtime,
         });
 
         if batch.len() >= BATCH_SIZE {
@@ -162,30 +171,40 @@ fn flush_batch(tree: &SharedTree, batch: &mut Vec<BatchEntry>) {
         if entry.is_dir {
             let node_id = t.get_or_create_path(&entry.components);
             t.nodes[node_id as usize].self_size += entry.size;
+            if entry.mtime > 0 {
+                let node = &mut t.nodes[node_id as usize];
+                if entry.mtime > node.newest_mtime {
+                    node.newest_mtime = entry.mtime;
+                }
+                if entry.mtime < node.oldest_mtime {
+                    node.oldest_mtime = entry.mtime;
+                }
+            }
             t.dirs_scanned += 1;
         } else {
             // For files, ensure parent dirs exist, add size to parent, store file entry
             let file_name = entry.components.last().cloned().unwrap_or_default();
             let file_size = entry.size;
-            if entry.components.len() > 1 {
+            let file_mtime = entry.mtime;
+            let parent_idx = if entry.components.len() > 1 {
                 let parent_components = &entry.components[..entry.components.len() - 1];
-                let parent_id = t.get_or_create_path(parent_components);
-                t.nodes[parent_id as usize].self_size += file_size;
-                t.nodes[parent_id as usize].own_file_count += 1;
-                t.nodes[parent_id as usize].files.push(FileEntry {
-                    name: file_name,
-                    size: file_size,
-                });
+                t.get_or_create_path(parent_components) as usize
             } else {
-                // File directly under root
-                let root = t.root as usize;
-                t.nodes[root].self_size += file_size;
-                t.nodes[root].own_file_count += 1;
-                t.nodes[root].files.push(FileEntry {
-                    name: file_name,
-                    size: file_size,
-                });
+                t.root as usize
+            };
+            t.nodes[parent_idx].self_size += file_size;
+            t.nodes[parent_idx].own_file_count += 1;
+            if file_mtime > t.nodes[parent_idx].newest_mtime {
+                t.nodes[parent_idx].newest_mtime = file_mtime;
             }
+            if file_mtime < t.nodes[parent_idx].oldest_mtime {
+                t.nodes[parent_idx].oldest_mtime = file_mtime;
+            }
+            t.nodes[parent_idx].files.push(FileEntry {
+                name: file_name,
+                size: file_size,
+                mtime: file_mtime,
+            });
             t.files_scanned += 1;
         }
     }

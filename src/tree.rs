@@ -11,6 +11,7 @@ pub type SharedTree = Arc<RwLock<DirTree>>;
 pub struct FileEntry {
     pub name: String,
     pub size: u64,
+    pub mtime: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +22,8 @@ pub struct DirNode {
     pub own_file_count: u64,
     pub file_count: u64,
     pub dir_count: u64,
+    pub newest_mtime: u64,
+    pub oldest_mtime: u64,
     #[serde(skip)]
     pub children: Vec<NodeId>,
     #[serde(skip)]
@@ -40,6 +43,8 @@ impl DirNode {
             own_file_count: 0,
             file_count: 0,
             dir_count: 0,
+            newest_mtime: 0,
+            oldest_mtime: u64::MAX,
             children: Vec::new(),
             parent,
             child_map: HashMap::new(),
@@ -113,6 +118,20 @@ impl DirTree {
         // Bottom-up pass: process children before parents
         // Since children always have higher indices than parents, iterate in reverse
         for i in (0..len).rev() {
+            // Start with this node's own mtime values (from its direct files)
+            let mut newest = self.nodes[i].newest_mtime;
+            let mut oldest = self.nodes[i].oldest_mtime;
+
+            // Include mtime from own files
+            for file in &self.nodes[i].files {
+                if file.mtime > newest {
+                    newest = file.mtime;
+                }
+                if file.mtime < oldest {
+                    oldest = file.mtime;
+                }
+            }
+
             let children = self.nodes[i].children.clone();
             let mut child_size: u64 = 0;
             let mut child_files: u64 = 0;
@@ -122,10 +141,18 @@ impl DirTree {
                 child_size += child.size;
                 child_files += child.file_count;
                 child_dirs += child.dir_count;
+                if child.newest_mtime > newest {
+                    newest = child.newest_mtime;
+                }
+                if child.oldest_mtime < oldest {
+                    oldest = child.oldest_mtime;
+                }
             }
             self.nodes[i].size = self.nodes[i].self_size + child_size;
             self.nodes[i].file_count = self.nodes[i].own_file_count + child_files;
             self.nodes[i].dir_count = children.len() as u64 + child_dirs;
+            self.nodes[i].newest_mtime = newest;
+            self.nodes[i].oldest_mtime = oldest;
         }
         // Update total
         self.total_size = self.nodes[self.root as usize].size;
