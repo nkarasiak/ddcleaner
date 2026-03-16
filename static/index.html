@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ddcleaner — Disk Usage Analyzer</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body data-layout="explorer">
+    <div class="progress-bar" id="progressBar"></div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <div class="status-left">
+            <span class="logo">ddcleaner</span>
+            <span class="version-badge">v1 read-only</span>
+            <span class="status-info" id="statusInfo"></span>
+        </div>
+        <div class="status-right">
+            <div class="freshness" id="freshness">
+                <span class="freshness-dot" id="freshnessDot"></span>
+                <span id="freshnessText"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Breadcrumb -->
+    <div class="breadcrumb-bar" id="breadcrumbBar" style="display:none;">
+        <nav class="breadcrumb" id="breadcrumb" aria-label="Directory navigation"></nav>
+        <div class="breadcrumb-right">
+            <div class="layout-switcher" id="layoutSwitcher">
+                <button class="layout-btn" data-layout="explorer" title="Explorer (1)">Explorer</button>
+                <button class="layout-btn" data-layout="classic" title="Classic (2)">Classic</button>
+                <button class="layout-btn" data-layout="list" title="List (3)">List</button>
+            </div>
+            <button class="smart-btn" id="smartBtn" title="Smart cleanup (S)">&#9889; Smart</button>
+            <button class="rescan-btn" id="rescanBtn" title="Rescan (R)">&#8635; Rescan</button>
+        </div>
+    </div>
+
+    <!-- Landing page -->
+    <div class="landing" id="landing">
+        <h1>ddcleaner</h1>
+        <p>Blazing fast disk usage analyzer — read-only, safe by design</p>
+        <div class="scan-form">
+            <input type="text" class="scan-input" id="scanInput" placeholder="/home" value="" autofocus>
+            <button class="scan-btn" id="scanBtn">Start Scan</button>
+        </div>
+    </div>
+
+    <!-- Main content (hidden until scan starts) -->
+    <div class="main-content" id="mainContent" style="display:none;">
+        <div class="tree-panel" id="treePanel">
+            <div class="list-header">Explorer</div>
+            <div id="treeContainer"></div>
+        </div>
+        <div class="treemap-panel" id="treemapPanel">
+            <canvas id="treemapCanvas"></canvas>
+        </div>
+        <div class="list-panel" id="listPanel">
+            <div class="list-header">Sorted by size</div>
+            <div id="errorContainer"></div>
+            <div id="listContainer" role="tree" aria-label="Directory listing"></div>
+        </div>
+    </div>
+
+    <!-- Bottom bar -->
+    <div class="bottom-bar" id="bottomBar" style="display:none;">
+        <span id="statFiles"></span>
+        <span class="bottom-sep">&middot;</span>
+        <span id="statDirs"></span>
+        <span class="bottom-sep">&middot;</span>
+        <span id="statSize"></span>
+        <span class="bottom-sep">&middot;</span>
+        <span id="statTime"></span>
+        <span class="bottom-sep">&middot;</span>
+        <span style="cursor:pointer;color:var(--text-muted)" title="Keyboard shortcuts (?)" id="shortcutHint">? shortcuts</span>
+    </div>
+
+    <!-- Tooltip -->
+    <div class="tooltip" id="tooltip">
+        <div class="tooltip-name" id="tooltipName"></div>
+        <div class="tooltip-detail" id="tooltipDetail"></div>
+    </div>
+
+    <!-- Context menu -->
+    <div class="context-menu" id="contextMenu">
+        <div class="ctx-item" id="ctxCopyPath">Copy path</div>
+        <div class="ctx-item" id="ctxOpenExplorer">Open in file manager</div>
+        <div class="ctx-item" id="ctxInfo">Show info</div>
+    </div>
+
+    <!-- Smart cleanup panel -->
+    <div class="smart-overlay" id="smartOverlay">
+        <div class="smart-panel">
+            <div class="smart-header">
+                <h2>Smart Cleanup Suggestions</h2>
+                <span class="smart-total" id="smartTotal"></span>
+                <button class="smart-close" id="smartClose">&times;</button>
+            </div>
+            <div class="smart-list" id="smartList"></div>
+        </div>
+    </div>
+
+    <!-- Keyboard shortcuts overlay -->
+    <div class="shortcuts-overlay" id="shortcutsOverlay">
+        <div class="shortcuts-card">
+            <h2>Keyboard Shortcuts</h2>
+            <div class="shortcut-row"><span>Navigate into folder</span><span class="shortcut-key">Enter</span></div>
+            <div class="shortcut-row"><span>Go up one level</span><span class="shortcut-key">Esc / Backspace</span></div>
+            <div class="shortcut-row"><span>Move selection up</span><span class="shortcut-key">&uarr;</span></div>
+            <div class="shortcut-row"><span>Move selection down</span><span class="shortcut-key">&darr;</span></div>
+            <div class="shortcut-row"><span>Rescan</span><span class="shortcut-key">R</span></div>
+            <div class="shortcut-row"><span>Explorer layout</span><span class="shortcut-key">1</span></div>
+            <div class="shortcut-row"><span>Classic layout</span><span class="shortcut-key">2</span></div>
+            <div class="shortcut-row"><span>List layout</span><span class="shortcut-key">3</span></div>
+            <div class="shortcut-row"><span>Smart cleanup</span><span class="shortcut-key">S</span></div>
+            <div class="shortcut-row"><span>Show shortcuts</span><span class="shortcut-key">?</span></div>
+        </div>
+    </div>
+
+    <!-- Screen reader tree mirror -->
+    <ul class="sr-only" id="srTree" role="tree" aria-label="Directory tree"></ul>
+
+    <script src="/app.js"></script>
+</body>
+</html>
