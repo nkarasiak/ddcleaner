@@ -6,41 +6,8 @@
     <title>ddcleaner — Disk Usage Analyzer</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body data-layout="explorer">
+<body>
     <div class="progress-bar" id="progressBar"></div>
-
-    <!-- Status Bar -->
-    <div class="status-bar">
-        <div class="status-left">
-            <span class="logo">ddcleaner</span>
-            <span class="version-badge">v1</span>
-            <span class="status-info" id="statusInfo"></span>
-        </div>
-        <div class="status-right">
-            <button class="theme-toggle" id="themeToggle" title="Toggle theme (T)">
-                <span id="themeIcon">&#9790;</span>
-            </button>
-            <div class="freshness" id="freshness">
-                <span class="freshness-dot" id="freshnessDot"></span>
-                <span id="freshnessText"></span>
-            </div>
-        </div>
-    </div>
-
-    <!-- Breadcrumb -->
-    <div class="breadcrumb-bar" id="breadcrumbBar" style="display:none;">
-        <nav class="breadcrumb" id="breadcrumb" aria-label="Directory navigation"></nav>
-        <div class="breadcrumb-right">
-            <div class="layout-switcher" id="layoutSwitcher">
-                <button class="layout-btn" data-layout="explorer" title="Explorer (1)">Explorer</button>
-                <button class="layout-btn" data-layout="classic" title="Classic (2)">Classic</button>
-                <button class="layout-btn" data-layout="list" title="List (3)">List</button>
-            </div>
-            <button class="types-btn" id="typesBtn" title="File types (F)">&#9638; Types</button>
-            <button class="smart-btn" id="smartBtn" title="Smart cleanup (S)">&#9889; Smart</button>
-            <button class="rescan-btn" id="rescanBtn" title="Rescan (R)">&#8635; Rescan</button>
-        </div>
-    </div>
 
     <!-- Landing page -->
     <div class="landing" id="landing">
@@ -52,35 +19,102 @@
         </div>
     </div>
 
-    <!-- Main content (hidden until scan starts) -->
-    <div class="main-content" id="mainContent" style="display:none;">
-        <div class="tree-panel" id="treePanel">
-            <div class="list-header">Explorer</div>
-            <div id="treeContainer"></div>
+    <!-- App layout (hidden until scan starts) -->
+    <div class="app-layout" id="appLayout" style="display:none;">
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-user" id="sidebarUser">
+                <span class="sidebar-user-icon">&#127968;</span>
+                <span class="sidebar-user-name" id="sidebarUserName">User</span>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">STORAGES</div>
+                <div class="sidebar-storage" id="sidebarStorage">
+                    <div class="sidebar-storage-name" id="storageName">SSD</div>
+                    <div class="sidebar-storage-bar">
+                        <div class="sidebar-storage-bar-fill" id="storageBarFill"></div>
+                    </div>
+                    <div class="sidebar-storage-info" id="storageInfo">--</div>
+                </div>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">FOLDERS</div>
+                <div class="sidebar-folders" id="sidebarFolders"></div>
+            </div>
+            <div class="sidebar-bottom">
+                <button class="sidebar-choose" id="sidebarChoose">+ Choose Folder...</button>
+            </div>
         </div>
-        <div class="treemap-panel" id="treemapPanel">
-            <canvas id="treemapCanvas"></canvas>
-        </div>
-        <div class="list-panel" id="listPanel">
-            <div class="list-header">Sorted by size</div>
-            <div id="errorContainer"></div>
-            <div id="listContainer" role="tree" aria-label="Directory listing"></div>
-        </div>
-    </div>
 
-    <!-- Bottom bar -->
-    <div class="bottom-bar" id="bottomBar" style="display:none;">
-        <span id="statFiles"></span>
-        <span class="bottom-sep">&middot;</span>
-        <span id="statDirs"></span>
-        <span class="bottom-sep">&middot;</span>
-        <span id="statSize"></span>
-        <span class="bottom-sep">&middot;</span>
-        <span id="statTime"></span>
-        <span class="bottom-sep">&middot;</span>
-        <span style="cursor:pointer;color:var(--text-muted)" title="Search (Ctrl+K)" id="searchHint">&#8984;K search</span>
-        <span class="bottom-sep">&middot;</span>
-        <span style="cursor:pointer;color:var(--text-muted)" title="Keyboard shortcuts (?)" id="shortcutHint">? shortcuts</span>
+        <!-- Main area -->
+        <div class="main-area">
+            <!-- Top bar -->
+            <div class="top-bar">
+                <div class="top-bar-left">
+                    <div class="view-toggle" id="viewToggle">
+                        <button class="view-btn active" data-view="folders" id="viewFolders">Folders Outline</button>
+                        <button class="view-btn" data-view="biggest" id="viewBiggest">Biggest Files</button>
+                    </div>
+                </div>
+                <div class="storage-info-text" id="storageInfoText"></div>
+                <div class="top-bar-right">
+                    <button class="top-icon-btn" id="searchBtn" title="Search (Ctrl+K)">&#128269;</button>
+                    <button class="top-icon-btn" id="smartBtn" title="Smart cleanup (S)">&#9889;</button>
+                    <button class="top-icon-btn" id="typesBtn" title="File types (F)">&#9638;</button>
+                    <button class="top-icon-btn" id="rescanBtn" title="Rescan (R)">&#8635;</button>
+                    <button class="theme-toggle" id="themeToggle" title="Toggle theme (T)">
+                        <span id="themeIcon">&#9790;</span>
+                    </button>
+                    <div class="freshness" id="freshness">
+                        <span class="freshness-dot" id="freshnessDot"></span>
+                        <span id="freshnessText"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content area -->
+            <div class="content-area" id="contentArea">
+                <!-- Browser panel -->
+                <div class="browser-panel" id="browserPanel">
+                    <div class="browser-columns">
+                        <div class="browser-col" id="leftCol">
+                            <div class="browser-col-header" id="leftColHeader">Loading...</div>
+                            <div class="browser-col-body" id="leftColBody"></div>
+                        </div>
+                        <div class="browser-col" id="rightCol">
+                            <div class="browser-col-header" id="rightColHeader">&nbsp;</div>
+                            <div class="browser-col-body" id="rightColBody"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Sunburst panel -->
+                <div class="sunburst-panel" id="sunburstPanel">
+                    <canvas id="sunburstCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Breadcrumb bar -->
+            <div class="breadcrumb-bar" id="breadcrumbBar">
+                <nav class="breadcrumb" id="breadcrumb" aria-label="Directory navigation"></nav>
+                <div class="breadcrumb-right">
+                    <span class="status-info" id="statusInfo"></span>
+                </div>
+            </div>
+
+            <!-- Action bar -->
+            <div class="action-bar" id="actionBar">
+                <div class="action-left">
+                    <span style="cursor:pointer;color:var(--text-muted);font-size:12px" title="Keyboard shortcuts (?)" id="shortcutHint">? shortcuts</span>
+                </div>
+                <div class="action-center" id="actionCenter">
+                    <span class="action-size" id="actionSize">0 B selected</span>
+                    <span class="action-count" id="actionCount">0 items</span>
+                </div>
+                <div class="action-right">
+                    <button class="review-btn" id="reviewBtn" disabled>Review to Remove</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Tooltip -->
@@ -143,6 +177,21 @@
         </div>
     </div>
 
+    <!-- Review to Remove overlay -->
+    <div class="smart-overlay" id="reviewOverlay">
+        <div class="smart-panel review-panel">
+            <div class="smart-header">
+                <h2>Review to Remove</h2>
+                <span class="smart-total" id="reviewTotal"></span>
+                <button class="smart-close" id="reviewClose">&times;</button>
+            </div>
+            <div class="smart-list" id="reviewList"></div>
+            <div class="review-footer">
+                <button class="delete-btn review-delete-all" id="reviewDeleteAll">Delete All Selected</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Keyboard shortcuts overlay -->
     <div class="shortcuts-overlay" id="shortcutsOverlay">
         <div class="shortcuts-card">
@@ -151,7 +200,7 @@
             <div class="shortcut-row"><span>Navigate into folder</span><span class="shortcut-key">Enter</span></div>
             <div class="shortcut-row"><span>Go up one level</span><span class="shortcut-key">Esc / Backspace</span></div>
             <div class="shortcut-row"><span>Move selection</span><span class="shortcut-key">&uarr; &darr;</span></div>
-            <div class="shortcut-row"><span>Explorer / Classic / List</span><span class="shortcut-key">1 2 3</span></div>
+            <div class="shortcut-row"><span>Toggle checkbox</span><span class="shortcut-key">Space</span></div>
             <div class="shortcut-row"><span>Smart cleanup</span><span class="shortcut-key">S</span></div>
             <div class="shortcut-row"><span>File types</span><span class="shortcut-key">F</span></div>
             <div class="shortcut-row"><span>Toggle theme</span><span class="shortcut-key">T</span></div>

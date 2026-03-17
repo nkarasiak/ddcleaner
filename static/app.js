@@ -1,21 +1,37 @@
-// ddcleaner — Frontend Application
+// ddcleaner — DaisyDisk-Inspired Frontend
 (function() {
     'use strict';
 
     // --- State ---
     let currentPath = '';
     let rootPath = '';
-    let treeData = null;
     let scanComplete = false;
     let scanStartedAt = null;
-    let selectedIndex = -1;
-    let treemapRects = [];
-    let hoveredRect = null;
     let eventSource = null;
-    let cachedImageData = null;
-    let currentLayout = localStorage.getItem('ddcleaner-layout') || 'explorer';
     let treeCache = {};
-    let expandedPaths = new Set();
+
+    // Two-column browser state
+    let leftColumnPath = '';
+    let rightColumnPath = '';
+    let leftColumnData = null;
+    let rightColumnData = null;
+    let selectedLeftIndex = -1;
+    let selectedRightIndex = -1;
+    let activeColumn = 'left'; // which column has focus
+
+    // Selection state
+    let selectedPaths = new Map(); // path -> {name, size, size_human, has_children}
+
+    // Sunburst state
+    let sunburstRings = []; // computed segments for hit detection
+    let sunburstHovered = null;
+    let sunburstCenterPath = '';
+
+    // View mode
+    let viewMode = 'folders'; // 'folders' | 'biggest'
+
+    // Disk info
+    let diskInfo = null;
 
     // --- DOM refs ---
     const $ = id => document.getElementById(id);
@@ -23,54 +39,45 @@
     const statusInfo = $('statusInfo');
     const freshnessDot = $('freshnessDot');
     const freshnessText = $('freshnessText');
-    const breadcrumbBar = $('breadcrumbBar');
-    const breadcrumb = $('breadcrumb');
     const landing = $('landing');
-    const mainContent = $('mainContent');
-    const bottomBar = $('bottomBar');
+    const appLayout = $('appLayout');
     const scanInput = $('scanInput');
     const scanBtn = $('scanBtn');
     const rescanBtn = $('rescanBtn');
-    const listContainer = $('listContainer');
-    const errorContainer = $('errorContainer');
-    const canvas = $('treemapCanvas');
-    const ctx = canvas.getContext('2d');
+    const breadcrumb = $('breadcrumb');
     const tooltip = $('tooltip');
     const tooltipName = $('tooltipName');
     const tooltipDetail = $('tooltipDetail');
     const shortcutsOverlay = $('shortcutsOverlay');
-    const shortcutHint = $('shortcutHint');
-    const treeContainer = $('treeContainer');
     const contextMenu = $('contextMenu');
     const smartOverlay = $('smartOverlay');
     const smartList = $('smartList');
     const smartTotal = $('smartTotal');
     const smartBtn = $('smartBtn');
     const smartClose = $('smartClose');
+    const canvas = $('sunburstCanvas');
+    const ctx = canvas.getContext('2d');
+    const leftColBody = $('leftColBody');
+    const rightColBody = $('rightColBody');
+    const leftColHeader = $('leftColHeader');
+    const rightColHeader = $('rightColHeader');
+    const actionSize = $('actionSize');
+    const actionCount = $('actionCount');
+    const reviewBtn = $('reviewBtn');
 
     // --- Context menu state ---
-    let ctxTarget = null; // { path, name, size_human, has_children }
+    let ctxTarget = null;
 
     // --- Color helpers ---
-    function sizeShareColor(percent) {
-        if (percent >= 70) return '#b91c1c';
-        if (percent >= 50) return '#b45309';
-        if (percent >= 30) return '#92400e';
-        if (percent >= 15) return '#166534';
-        if (percent >= 5) return '#1e4d4d';
-        return '#1c1c20';
+    const SUNBURST_COLORS = ['#2dd4bf','#3fb950','#d4a017','#f0883e','#f85149','#4493f8','#a371f7','#6cb6ff'];
+
+    function sizeColorClass(sizeHuman) {
+        if (/[GT]iB/.test(sizeHuman)) return 'size-gb';
+        if (/MiB/.test(sizeHuman)) return 'size-mb';
+        if (/KiB/.test(sizeHuman)) return 'size-kb';
+        return 'size-bytes';
     }
 
-    function sizeShareColorLight(percent) {
-        if (percent >= 70) return '#dc2626';
-        if (percent >= 50) return '#d97706';
-        if (percent >= 30) return '#b45309';
-        if (percent >= 15) return '#16a34a';
-        if (percent >= 5) return '#2d8a8a';
-        return '#27272a';
-    }
-
-    // --- Number formatting ---
     function formatNum(n) {
         return n.toLocaleString();
     }
@@ -83,6 +90,12 @@
         return val.toFixed(2) + ' ' + units[i];
     }
 
+    function formatDate(timestamp) {
+        if (!timestamp || timestamp === 0) return '';
+        const d = new Date(timestamp * 1000);
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+
     // --- Freshness ---
     function updateFreshness() {
         if (!scanStartedAt) return;
@@ -92,52 +105,21 @@
             return;
         }
         const ago = (Date.now() - scanStartedAt) / 1000;
-        let cls = 'fresh', text = '';
+        let cls, text;
         if (ago < 60) {
-            text = `Scanned ${Math.round(ago)}s ago`;
+            text = `${Math.round(ago)}s ago`;
             cls = 'fresh';
         } else if (ago < 300) {
-            text = `Scanned ${Math.round(ago / 60)}m ago`;
+            text = `${Math.round(ago / 60)}m ago`;
             cls = 'aging';
         } else {
-            text = `Scanned ${Math.round(ago / 60)}m ago`;
+            text = `${Math.round(ago / 60)}m ago`;
             cls = 'stale';
         }
         freshnessDot.className = 'freshness-dot ' + cls;
         freshnessText.textContent = text;
     }
-
     setInterval(updateFreshness, 1000);
-
-    // --- Layout switching ---
-    function setLayout(name) {
-        currentLayout = name;
-        document.body.dataset.layout = name;
-        localStorage.setItem('ddcleaner-layout', name);
-
-        // Update button active states
-        document.querySelectorAll('.layout-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.layout === name);
-        });
-
-        // Re-layout treemap if visible
-        if (name !== 'list') {
-            requestAnimationFrame(() => layoutTreemap());
-        }
-
-        // Render tree if explorer
-        if (name === 'explorer' && rootPath) {
-            renderTree();
-        }
-    }
-
-    // Init layout buttons
-    document.querySelectorAll('.layout-btn').forEach(btn => {
-        btn.addEventListener('click', () => setLayout(btn.dataset.layout));
-    });
-
-    // Apply saved layout
-    setLayout(currentLayout);
 
     // --- SSE ---
     function connectSSE() {
@@ -149,7 +131,8 @@
             if (data.scan_complete && !scanComplete) {
                 scanComplete = true;
                 scanStartedAt = Date.now();
-                fetchTree(currentPath);
+                loadLeftColumn(currentPath);
+                fetchDiskInfo();
             }
         };
         eventSource.onerror = function() {
@@ -158,17 +141,35 @@
     }
 
     function updateStatus(data) {
-        statusInfo.textContent = `${data.total_size_human || '—'} · ${formatNum(data.files_scanned || 0)} files`;
+        statusInfo.textContent = `${data.total_size_human || '\u2014'} \u00b7 ${formatNum(data.files_scanned || 0)} files \u00b7 ${(data.elapsed_secs || 0).toFixed(1)}s`;
         const pct = data.scan_complete ? 100 : Math.min(95, Math.log10((data.files_scanned || 1) + 1) * 20);
         progressBar.style.width = pct + '%';
         progressBar.classList.toggle('complete', data.scan_complete);
         scanComplete = data.scan_complete;
+    }
 
-        // Bottom bar
-        $('statFiles').textContent = formatNum(data.files_scanned || 0) + ' files';
-        $('statDirs').textContent = formatNum(data.dirs_scanned || 0) + ' dirs';
-        $('statSize').textContent = data.total_size_human || '—';
-        $('statTime').textContent = 'Scan: ' + (data.elapsed_secs || 0).toFixed(1) + 's';
+    // --- Disk info ---
+    async function fetchDiskInfo() {
+        try {
+            const resp = await fetch('/api/diskinfo');
+            if (!resp.ok) return;
+            diskInfo = await resp.json();
+            updateStorageDisplay();
+        } catch (e) {}
+    }
+
+    function updateStorageDisplay() {
+        if (!diskInfo) return;
+        const fill = $('storageBarFill');
+        const info = $('storageInfo');
+        const infoText = $('storageInfoText');
+        const name = $('storageName');
+
+        const usedPct = Math.round((diskInfo.used / diskInfo.total) * 100);
+        fill.style.width = usedPct + '%';
+        info.textContent = `${diskInfo.available_human} available of ${diskInfo.total_human}`;
+        infoText.textContent = `${diskInfo.available_human} available of ${diskInfo.total_human}`;
+        name.textContent = rootPath.split('/').filter(Boolean)[0] || 'SSD';
     }
 
     // --- API ---
@@ -178,476 +179,30 @@
         currentPath = path;
         rootPath = path;
         treeCache = {};
-        expandedPaths = new Set();
+        selectedPaths.clear();
+        updateActionBar();
 
         landing.style.display = 'none';
-        mainContent.style.display = 'flex';
-        breadcrumbBar.style.display = 'flex';
-        bottomBar.style.display = 'flex';
+        appLayout.style.display = 'flex';
 
         try {
             const resp = await fetch('/api/scan?path=' + encodeURIComponent(path));
-            if (resp.status === 409) {
-                // Already scanning, just connect SSE
-            }
+            if (resp.status === 409) { /* already scanning */ }
         } catch (e) {
             console.error('Scan start failed:', e);
         }
 
         connectSSE();
-        // Poll tree during scan
+        updateSidebar();
         pollTree();
     }
 
     function pollTree() {
         if (scanComplete) return;
         setTimeout(async () => {
-            await fetchTree(currentPath);
+            await loadLeftColumn(currentPath);
             if (!scanComplete) pollTree();
         }, 800);
-    }
-
-    async function fetchTree(path) {
-        try {
-            const url = '/api/tree?path=' + encodeURIComponent(path || rootPath);
-            const resp = await fetch(url);
-            if (!resp.ok) return;
-            treeData = await resp.json();
-            currentPath = treeData.path;
-            renderBreadcrumb();
-            renderList();
-            layoutTreemap();
-            updateSRTree();
-
-            // Cache for tree panel and render
-            treeCache[treeData.path] = treeData;
-            if (currentLayout === 'explorer') {
-                autoExpandAncestors(currentPath);
-                renderTree();
-            }
-        } catch (e) {
-            console.error('Fetch tree failed:', e);
-        }
-    }
-
-    async function fetchErrors() {
-        try {
-            const resp = await fetch('/api/errors');
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (data.count > 0) {
-                renderErrors(data);
-            }
-        } catch (e) {}
-    }
-
-    // --- Navigation ---
-    function navigateTo(path) {
-        currentPath = path;
-        selectedIndex = -1;
-        fetchTree(path);
-    }
-
-    function navigateUp() {
-        if (!currentPath || currentPath === rootPath) return;
-        const parts = currentPath.replace(/\/$/, '').split('/');
-        parts.pop();
-        const parent = parts.join('/') || '/';
-        navigateTo(parent);
-    }
-
-    // --- Breadcrumb ---
-    function renderBreadcrumb() {
-        if (!treeData) return;
-        breadcrumb.innerHTML = '';
-
-        const fullPath = currentPath || rootPath;
-        const parts = fullPath.split('/').filter(Boolean);
-        let accumulated = '';
-
-        // Root
-        const rootEl = document.createElement('span');
-        rootEl.className = 'breadcrumb-item' + (parts.length === 0 ? ' active' : '');
-        rootEl.textContent = '/';
-        rootEl.onclick = () => navigateTo(rootPath);
-        breadcrumb.appendChild(rootEl);
-
-        parts.forEach((part, i) => {
-            accumulated += '/' + part;
-            const sep = document.createElement('span');
-            sep.className = 'breadcrumb-sep';
-            sep.textContent = '›';
-            breadcrumb.appendChild(sep);
-
-            const el = document.createElement('span');
-            el.className = 'breadcrumb-item' + (i === parts.length - 1 ? ' active' : '');
-            el.textContent = part;
-            const path = accumulated;
-            el.onclick = () => navigateTo(path);
-            breadcrumb.appendChild(el);
-        });
-    }
-
-    // --- List ---
-    function renderList() {
-        if (!treeData || !treeData.children) return;
-        listContainer.innerHTML = '';
-
-        treeData.children.forEach((child, i) => {
-            const item = document.createElement('div');
-            item.className = 'list-item' + (i === selectedIndex ? ' selected' : '');
-            item.role = 'treeitem';
-            item.tabIndex = 0;
-
-            const icon = document.createElement('span');
-            icon.className = 'list-icon';
-            icon.textContent = child.has_children ? '📁' : '📄';
-
-            const name = document.createElement('span');
-            name.className = 'list-name';
-            name.textContent = child.name;
-
-            const meta = document.createElement('div');
-            meta.className = 'list-meta';
-
-            const size = document.createElement('span');
-            size.className = 'list-size';
-            size.textContent = child.size_human;
-
-            const pct = document.createElement('span');
-            pct.className = 'list-percent';
-            pct.textContent = child.percent.toFixed(1) + '%';
-
-            meta.appendChild(size);
-            meta.appendChild(pct);
-
-            const barContainer = document.createElement('div');
-            barContainer.className = 'list-bar-container';
-            const bar = document.createElement('div');
-            bar.className = 'list-bar';
-            bar.style.width = Math.max(2, child.percent) + '%';
-            bar.style.background = sizeShareColor(child.percent);
-            barContainer.appendChild(bar);
-
-            item.appendChild(icon);
-            item.appendChild(name);
-            item.appendChild(barContainer);
-            item.appendChild(meta);
-
-            item.onclick = () => {
-                if (child.has_children) {
-                    navigateTo(child.path);
-                }
-            };
-
-            item.onmouseenter = () => {
-                selectedIndex = i;
-                highlightSelected();
-            };
-
-            item.addEventListener('contextmenu', (e) => {
-                showContextMenu(e, {
-                    path: child.path,
-                    name: child.name,
-                    size_human: child.size_human,
-                    has_children: child.has_children
-                });
-            });
-
-            listContainer.appendChild(item);
-        });
-
-        fetchErrors();
-    }
-
-    function highlightSelected() {
-        const items = listContainer.querySelectorAll('.list-item');
-        items.forEach((item, i) => {
-            item.classList.toggle('selected', i === selectedIndex);
-        });
-    }
-
-    // --- Errors ---
-    function renderErrors(data) {
-        errorContainer.innerHTML = '';
-        if (data.count === 0) return;
-
-        const panel = document.createElement('div');
-        panel.className = 'errors-panel';
-
-        const header = document.createElement('div');
-        header.className = 'errors-header';
-        header.textContent = `⚠ ${data.count} scan error${data.count > 1 ? 's' : ''}`;
-
-        const list = document.createElement('div');
-        list.className = 'errors-list';
-        data.errors.slice(0, 50).forEach(err => {
-            const div = document.createElement('div');
-            div.textContent = err;
-            list.appendChild(div);
-        });
-
-        header.onclick = () => list.classList.toggle('open');
-        panel.appendChild(header);
-        panel.appendChild(list);
-        errorContainer.appendChild(panel);
-    }
-
-    // --- Screen reader tree ---
-    function updateSRTree() {
-        const srTree = $('srTree');
-        srTree.innerHTML = '';
-        if (!treeData || !treeData.children) return;
-        treeData.children.forEach(child => {
-            const li = document.createElement('li');
-            li.role = 'treeitem';
-            li.textContent = `${child.name}, ${child.size_human}, ${child.percent.toFixed(1)} percent`;
-            srTree.appendChild(li);
-        });
-    }
-
-    // --- Treemap (squarified) ---
-    // Phase 1: Split into layoutTreemap() + drawHover()
-
-    function layoutTreemap() {
-        if (!treeData || !treeData.children || treeData.children.length === 0) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            cachedImageData = null;
-            return;
-        }
-
-        const dpr = window.devicePixelRatio || 1;
-        const rect = canvas.parentElement.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return;
-
-        canvas.width = rect.width * dpr;
-        canvas.height = rect.height * dpr;
-        canvas.style.width = rect.width + 'px';
-        canvas.style.height = rect.height + 'px';
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        treemapRects = [];
-
-        const items = treeData.children.map(c => ({
-            ...c,
-            area: c.size
-        }));
-
-        const totalArea = items.reduce((s, c) => s + c.area, 0);
-        if (totalArea === 0) return;
-
-        const W = rect.width;
-        const H = rect.height;
-        const scale = (W * H) / totalArea;
-        items.forEach(item => item.area = item.area * scale);
-
-        squarify(items, { x: 0, y: 0, w: W, h: H });
-
-        // Draw all rects in base colors (no hover)
-        treemapRects.forEach(r => {
-            ctx.fillStyle = sizeShareColor(r.data.percent);
-            ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-
-            // Border
-            ctx.strokeStyle = '#09090b';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(r.x, r.y, r.w, r.h);
-
-            // Label
-            if (r.w > 50 && r.h > 28) {
-                ctx.fillStyle = '#fafafa';
-                ctx.font = '600 12px Inter, system-ui, sans-serif';
-                ctx.textBaseline = 'top';
-
-                let label = r.data.name;
-                const maxW = r.w - 12;
-                while (ctx.measureText(label).width > maxW && label.length > 3) {
-                    label = label.slice(0, -4) + '…';
-                }
-                ctx.fillText(label, r.x + 6, r.y + 6);
-
-                if (r.h > 44) {
-                    ctx.fillStyle = '#a1a1aa';
-                    ctx.font = '11px JetBrains Mono, monospace';
-                    ctx.fillText(r.data.size_human, r.x + 6, r.y + 22);
-                }
-            }
-        });
-
-        // Cache the base image
-        cachedImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-        // Draw current hover if any
-        drawHover(hoveredRect);
-    }
-
-    function drawHover(rect) {
-        if (!cachedImageData) return;
-
-        // Restore base image
-        ctx.putImageData(cachedImageData, 0, 0);
-
-        if (!rect) return;
-
-        const dpr = window.devicePixelRatio || 1;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        // Redraw hovered rect with light color
-        ctx.fillStyle = sizeShareColorLight(rect.data.percent);
-        ctx.fillRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
-
-        // White outline (2px inside)
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
-
-        // Label
-        if (rect.w > 50 && rect.h > 28) {
-            ctx.fillStyle = '#fafafa';
-            ctx.font = '600 12px Inter, system-ui, sans-serif';
-            ctx.textBaseline = 'top';
-
-            let label = rect.data.name;
-            const maxW = rect.w - 12;
-            while (ctx.measureText(label).width > maxW && label.length > 3) {
-                label = label.slice(0, -4) + '…';
-            }
-            ctx.fillText(label, rect.x + 6, rect.y + 6);
-
-            if (rect.h > 44) {
-                ctx.fillStyle = '#a1a1aa';
-                ctx.font = '11px JetBrains Mono, monospace';
-                ctx.fillText(rect.data.size_human, rect.x + 6, rect.y + 22);
-            }
-        }
-    }
-
-    function squarify(items, rect) {
-        if (items.length === 0) return;
-        if (items.length === 1) {
-            treemapRects.push({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, data: items[0] });
-            return;
-        }
-
-        const isWide = rect.w >= rect.h;
-        let row = [];
-        let remaining = [...items];
-        let best = Infinity;
-
-        for (let i = 0; i < items.length; i++) {
-            row.push(remaining.shift());
-            const ratio = worstRatio(row, isWide ? rect.w : rect.h, rect);
-            if (ratio <= best) {
-                best = ratio;
-            } else {
-                remaining.unshift(row.pop());
-                break;
-            }
-        }
-
-        // Layout the row
-        const rowArea = row.reduce((s, item) => s + item.area, 0);
-        let x = rect.x, y = rect.y;
-
-        if (isWide) {
-            const rowW = rowArea / rect.h;
-            row.forEach(item => {
-                const h = item.area / rowW;
-                treemapRects.push({ x, y, w: rowW, h, data: item });
-                y += h;
-            });
-            squarify(remaining, { x: rect.x + rowW, y: rect.y, w: rect.w - rowW, h: rect.h });
-        } else {
-            const rowH = rowArea / rect.w;
-            row.forEach(item => {
-                const w = item.area / rowH;
-                treemapRects.push({ x, y, w, h: rowH, data: item });
-                x += w;
-            });
-            squarify(remaining, { x: rect.x, y: rect.y + rowH, w: rect.w, h: rect.h - rowH });
-        }
-    }
-
-    function worstRatio(row, side, rect) {
-        const totalArea = row.reduce((s, item) => s + item.area, 0);
-        const isWide = rect.w >= rect.h;
-        const length = isWide ? totalArea / rect.h : totalArea / rect.w;
-        if (length === 0) return Infinity;
-
-        let worst = 0;
-        row.forEach(item => {
-            const other = item.area / length;
-            const ratio = Math.max(length / other, other / length);
-            worst = Math.max(worst, ratio);
-        });
-        return worst;
-    }
-
-    // --- Canvas interaction ---
-    canvas.addEventListener('mousemove', e => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-
-        let found = null;
-        for (const r of treemapRects) {
-            if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-                found = r;
-            }
-        }
-
-        if (found !== hoveredRect) {
-            hoveredRect = found;
-            drawHover(hoveredRect);
-        }
-
-        if (found) {
-            tooltip.style.display = 'block';
-            tooltip.style.left = (e.clientX + 12) + 'px';
-            tooltip.style.top = (e.clientY + 12) + 'px';
-            tooltipName.textContent = found.data.name;
-            tooltipDetail.innerHTML =
-                found.data.size_human + ' · ' + found.data.percent.toFixed(1) + '%<br>' +
-                formatNum(found.data.file_count) + ' files · ' + formatNum(found.data.dir_count) + ' dirs';
-            canvas.style.cursor = found.data.has_children ? 'pointer' : 'default';
-        } else {
-            tooltip.style.display = 'none';
-            canvas.style.cursor = 'default';
-        }
-    });
-
-    canvas.addEventListener('mouseleave', () => {
-        hoveredRect = null;
-        tooltip.style.display = 'none';
-        drawHover(null);
-    });
-
-    canvas.addEventListener('click', e => {
-        if (hoveredRect && hoveredRect.data.has_children) {
-            navigateTo(hoveredRect.data.path);
-        }
-    });
-
-    // --- Resize ---
-    let resizeTimer;
-    window.addEventListener('resize', () => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(layoutTreemap, 100);
-    });
-
-    // --- Folder tree panel (Phase 3) ---
-    function autoExpandAncestors(path) {
-        if (!rootPath || !path) return;
-        // Build ancestor paths from rootPath to path
-        const rootParts = rootPath.split('/').filter(Boolean);
-        const pathParts = path.split('/').filter(Boolean);
-        let accumulated = '';
-        for (let i = 0; i < pathParts.length; i++) {
-            accumulated += '/' + pathParts[i];
-            if (i >= rootParts.length - 1) {
-                expandedPaths.add(accumulated);
-            }
-        }
     }
 
     async function fetchTreeNode(path) {
@@ -664,123 +219,669 @@
         }
     }
 
-    function renderTree() {
-        treeContainer.innerHTML = '';
-        if (!rootPath) return;
+    // --- Navigation ---
+    function navigateTo(path) {
+        currentPath = path;
+        selectedLeftIndex = -1;
+        selectedRightIndex = -1;
+        loadLeftColumn(path);
+    }
 
-        const rootData = treeCache[rootPath];
-        if (!rootData) {
-            // Fetch root and render
-            fetchTreeNode(rootPath).then(() => renderTree());
-            return;
+    function navigateUp() {
+        if (!currentPath || currentPath === rootPath) return;
+        const parts = currentPath.replace(/\/$/, '').split('/');
+        parts.pop();
+        const parent = parts.join('/') || '/';
+        navigateTo(parent);
+    }
+
+    // --- Two-column browser ---
+    async function loadLeftColumn(path) {
+        leftColumnPath = path;
+        const data = await fetchTreeNode(path);
+        if (!data) return;
+        leftColumnData = data;
+        currentPath = data.path;
+        treeCache[data.path] = data;
+
+        leftColHeader.textContent = data.name;
+        renderBrowserColumn(leftColBody, data, 'left');
+        renderBreadcrumb();
+
+        // Auto-select first folder child for right column
+        const firstFolder = data.children.find(c => c.has_children);
+        if (firstFolder) {
+            loadRightColumn(firstFolder.path);
+            highlightActiveLeft(firstFolder.path);
+        } else if (data.children.length > 0) {
+            rightColHeader.textContent = '\u00a0';
+            rightColBody.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;font-size:13px">No subfolders</div>';
+            rightColumnPath = '';
+            rightColumnData = null;
+        } else {
+            rightColHeader.textContent = '\u00a0';
+            rightColBody.innerHTML = '';
+            rightColumnPath = '';
+            rightColumnData = null;
         }
 
-        renderTreeChildren(rootData, 0);
+        // Sunburst
+        sunburstCenterPath = data.path;
+        drawSunburst(data);
+    }
 
-        // Scroll to active node
-        requestAnimationFrame(() => {
-            const active = treeContainer.querySelector('.tree-active');
-            if (active) active.scrollIntoView({ block: 'nearest' });
+    async function loadRightColumn(path) {
+        rightColumnPath = path;
+        const data = await fetchTreeNode(path);
+        if (!data) return;
+        rightColumnData = data;
+        treeCache[data.path] = data;
+
+        rightColHeader.textContent = data.name;
+        renderBrowserColumn(rightColBody, data, 'right');
+    }
+
+    function highlightActiveLeft(activePath) {
+        leftColBody.querySelectorAll('.browser-row').forEach(row => {
+            row.classList.toggle('active', row.dataset.path === activePath);
         });
     }
 
-    function renderTreeChildren(nodeData, depth) {
-        if (!nodeData || !nodeData.children) return;
+    function renderBrowserColumn(container, data, side) {
+        container.innerHTML = '';
+        if (!data || !data.children || data.children.length === 0) {
+            container.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;font-size:13px">Empty</div>';
+            return;
+        }
 
-        // Sort children by size descending
-        const sorted = [...nodeData.children].sort((a, b) => b.size - a.size);
+        const sorted = [...data.children].sort((a, b) => b.size - a.size);
+
+        // Separate: main items, small items (<1%), hidden items (dotfiles)
+        const mainItems = [];
+        const smallItems = [];
+        const hiddenItems = [];
 
         sorted.forEach(child => {
-            const node = document.createElement('div');
-            node.className = 'tree-node';
-            if (child.path === currentPath) node.classList.add('tree-active');
-            node.dataset.path = child.path;
-            node.style.paddingLeft = (8 + depth * 16) + 'px';
-
-            const chevron = document.createElement('span');
-            chevron.className = 'tree-chevron';
-            if (child.has_children) {
-                chevron.textContent = '›';
-                if (expandedPaths.has(child.path)) {
-                    chevron.classList.add('expanded');
-                }
+            if (child.name.startsWith('.')) {
+                hiddenItems.push(child);
+            } else if (child.percent < 1) {
+                smallItems.push(child);
             } else {
-                chevron.classList.add('leaf');
-            }
-
-            const icon = document.createElement('span');
-            icon.className = 'tree-icon';
-            icon.textContent = child.has_children ? '📁' : '📄';
-
-            const label = document.createElement('span');
-            label.className = 'tree-label';
-            label.textContent = child.name;
-
-            const barContainer = document.createElement('div');
-            barContainer.className = 'tree-bar-container';
-            const bar = document.createElement('div');
-            bar.className = 'tree-bar';
-            bar.style.width = Math.max(2, child.percent) + '%';
-            bar.style.background = sizeShareColor(child.percent);
-            barContainer.appendChild(bar);
-
-            const meta = document.createElement('div');
-            meta.className = 'tree-meta';
-            const size = document.createElement('span');
-            size.className = 'tree-size';
-            size.textContent = child.size_human;
-            const pct = document.createElement('span');
-            pct.className = 'tree-percent';
-            pct.textContent = child.percent.toFixed(1) + '%';
-            meta.appendChild(size);
-            meta.appendChild(pct);
-
-            node.appendChild(chevron);
-            node.appendChild(icon);
-            node.appendChild(label);
-            node.appendChild(barContainer);
-            node.appendChild(meta);
-
-            // Chevron click: toggle expand
-            chevron.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                if (!child.has_children) return;
-
-                if (expandedPaths.has(child.path)) {
-                    expandedPaths.delete(child.path);
-                } else {
-                    expandedPaths.add(child.path);
-                    if (!treeCache[child.path]) {
-                        await fetchTreeNode(child.path);
-                    }
-                }
-                renderTree();
-            });
-
-            // Name click: navigate treemap
-            node.addEventListener('click', () => {
-                if (child.has_children) {
-                    navigateTo(child.path);
-                }
-            });
-
-            // Right-click: context menu
-            node.addEventListener('contextmenu', (e) => {
-                showContextMenu(e, {
-                    path: child.path,
-                    name: child.name,
-                    size_human: child.size_human,
-                    has_children: child.has_children
-                });
-            });
-
-            treeContainer.appendChild(node);
-
-            // Render expanded children
-            if (child.has_children && expandedPaths.has(child.path) && treeCache[child.path]) {
-                renderTreeChildren(treeCache[child.path], depth + 1);
+                mainItems.push(child);
             }
         });
+
+        mainItems.forEach((child, i) => {
+            container.appendChild(createBrowserRow(child, side, i));
+        });
+
+        if (smallItems.length > 0) {
+            appendCollapsibleGroup(container, `Small items (${smallItems.length})`, smallItems, side, mainItems.length);
+        }
+
+        if (hiddenItems.length > 0) {
+            appendCollapsibleGroup(container, `Hidden items (${hiddenItems.length})`, hiddenItems, side, mainItems.length + smallItems.length);
+        }
+    }
+
+    function createBrowserRow(child, side, index) {
+        const row = document.createElement('div');
+        row.className = 'browser-row';
+        row.dataset.path = child.path;
+        row.dataset.side = side;
+        row.dataset.index = index;
+
+        // Checkbox
+        const cb = document.createElement('div');
+        cb.className = 'row-checkbox' + (selectedPaths.has(child.path) ? ' checked' : '');
+        cb.textContent = selectedPaths.has(child.path) ? '\u2713' : '';
+        cb.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleSelection(child, cb);
+        });
+
+        // Icon
+        const icon = document.createElement('span');
+        icon.className = 'row-icon';
+        icon.textContent = child.has_children ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
+
+        // Name
+        const name = document.createElement('span');
+        name.className = 'row-name';
+        name.textContent = child.name;
+
+        // Size
+        const size = document.createElement('span');
+        size.className = 'row-size ' + sizeColorClass(child.size_human);
+        size.textContent = child.size_human;
+
+        row.appendChild(cb);
+        row.appendChild(icon);
+        row.appendChild(name);
+        row.appendChild(size);
+
+        // Click behavior
+        row.addEventListener('click', () => {
+            if (child.has_children) {
+                if (side === 'left') {
+                    highlightActiveLeft(child.path);
+                    loadRightColumn(child.path);
+                    // Update sunburst to show this child
+                    sunburstCenterPath = currentPath;
+                } else {
+                    // Drill deeper: right becomes left
+                    navigateTo(child.path);
+                }
+            }
+        });
+
+        // Context menu
+        row.addEventListener('contextmenu', (e) => {
+            showContextMenu(e, {
+                path: child.path,
+                name: child.name,
+                size_human: child.size_human,
+                has_children: child.has_children
+            });
+        });
+
+        return row;
+    }
+
+    function appendCollapsibleGroup(container, label, items, side, startIndex) {
+        const toggle = document.createElement('div');
+        toggle.className = 'browser-group-toggle';
+        const chevron = document.createElement('span');
+        chevron.className = 'group-chevron';
+        chevron.textContent = '\u203A';
+        const text = document.createElement('span');
+        text.textContent = label;
+        toggle.appendChild(chevron);
+        toggle.appendChild(text);
+
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'browser-group-items';
+        items.forEach((child, i) => {
+            groupDiv.appendChild(createBrowserRow(child, side, startIndex + i));
+        });
+
+        toggle.addEventListener('click', () => {
+            chevron.classList.toggle('expanded');
+            groupDiv.classList.toggle('open');
+        });
+
+        container.appendChild(toggle);
+        container.appendChild(groupDiv);
+    }
+
+    // --- Selection ---
+    function toggleSelection(child, cbEl) {
+        if (selectedPaths.has(child.path)) {
+            selectedPaths.delete(child.path);
+            if (cbEl) {
+                cbEl.classList.remove('checked');
+                cbEl.textContent = '';
+            }
+        } else {
+            selectedPaths.set(child.path, {
+                name: child.name,
+                size: child.size,
+                size_human: child.size_human,
+                has_children: child.has_children
+            });
+            if (cbEl) {
+                cbEl.classList.add('checked');
+                cbEl.textContent = '\u2713';
+            }
+        }
+        updateActionBar();
+    }
+
+    function updateActionBar() {
+        let totalSize = 0;
+        selectedPaths.forEach(v => totalSize += v.size);
+        actionSize.textContent = formatSize(totalSize) + ' selected';
+        actionCount.textContent = selectedPaths.size + ' item' + (selectedPaths.size !== 1 ? 's' : '');
+        reviewBtn.disabled = selectedPaths.size === 0;
+    }
+
+    // --- Breadcrumb ---
+    function renderBreadcrumb() {
+        breadcrumb.innerHTML = '';
+        const fullPath = currentPath || rootPath;
+        const parts = fullPath.split('/').filter(Boolean);
+        let accumulated = '';
+
+        const rootEl = document.createElement('span');
+        rootEl.className = 'breadcrumb-item' + (parts.length === 0 ? ' active' : '');
+        rootEl.textContent = '/';
+        rootEl.onclick = () => navigateTo(rootPath);
+        breadcrumb.appendChild(rootEl);
+
+        parts.forEach((part, i) => {
+            accumulated += '/' + part;
+            const sep = document.createElement('span');
+            sep.className = 'breadcrumb-sep';
+            sep.textContent = '\u203A';
+            breadcrumb.appendChild(sep);
+
+            const el = document.createElement('span');
+            el.className = 'breadcrumb-item' + (i === parts.length - 1 ? ' active' : '');
+            el.textContent = part;
+            const path = accumulated;
+            el.onclick = () => navigateTo(path);
+            breadcrumb.appendChild(el);
+        });
+    }
+
+    // --- Sidebar ---
+    function updateSidebar() {
+        // Username from path
+        const parts = rootPath.split('/').filter(Boolean);
+        let username = parts[parts.length - 1] || 'User';
+        if (parts[0] === 'home' && parts.length >= 2) username = parts[1];
+        $('sidebarUserName').textContent = username;
+
+        // Folder shortcuts
+        const folders = $('sidebarFolders');
+        folders.innerHTML = '';
+        const wellKnown = [
+            { name: 'Desktop', icon: '\uD83D\uDDA5\uFE0F' },
+            { name: 'Documents', icon: '\uD83D\uDCC4' },
+            { name: 'Downloads', icon: '\u2B07\uFE0F' },
+            { name: 'Pictures', icon: '\uD83D\uDDBC\uFE0F' },
+            { name: 'Music', icon: '\uD83C\uDFB5' },
+            { name: 'Videos', icon: '\uD83C\uDFA5' },
+        ];
+
+        // Check if root tree data is cached
+        const rootData = treeCache[rootPath];
+        if (rootData) {
+            const childNames = new Set(rootData.children.map(c => c.name));
+            wellKnown.forEach(wk => {
+                if (childNames.has(wk.name)) {
+                    const child = rootData.children.find(c => c.name === wk.name);
+                    const item = document.createElement('div');
+                    item.className = 'sidebar-folder-item';
+                    item.innerHTML = `<span class="folder-icon">${wk.icon}</span><span>${wk.name}</span><span class="folder-size">${child.size_human}</span>`;
+                    item.addEventListener('click', () => navigateTo(child.path));
+                    folders.appendChild(item);
+                }
+            });
+        }
+    }
+
+    // Choose folder button
+    $('sidebarChoose').addEventListener('click', () => {
+        landing.style.display = 'flex';
+        appLayout.style.display = 'none';
+        scanInput.focus();
+    });
+
+    // --- Sunburst Chart ---
+    function drawSunburst(rootData) {
+        if (!rootData || !rootData.children || rootData.children.length === 0) {
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            canvas.style.width = rect.width + 'px';
+            canvas.style.height = rect.height + 'px';
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, rect.width, rect.height);
+            sunburstRings = [];
+            return;
+        }
+
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.parentElement.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        canvas.style.width = rect.width + 'px';
+        canvas.style.height = rect.height + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const maxRadius = Math.min(cx, cy) - 20;
+        const innerRadius = 55;
+        const depth = 3;
+        const ringWidth = (maxRadius - innerRadius) / depth;
+
+        sunburstRings = [];
+
+        // Draw ring levels
+        const totalSize = rootData.size || 1;
+        let startAngle = -Math.PI / 2;
+
+        // Level 0: direct children
+        const level0 = rootData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
+        level0.forEach((child, i) => {
+            const sweep = (child.size / totalSize) * Math.PI * 2;
+            if (sweep < 0.005) { startAngle += sweep; return; }
+
+            const color = SUNBURST_COLORS[i % SUNBURST_COLORS.length];
+            const r0 = innerRadius;
+            const r1 = innerRadius + ringWidth;
+
+            drawArc(cx, cy, r0, r1, startAngle, startAngle + sweep, color, 0.9);
+            sunburstRings.push({
+                cx, cy, r0, r1,
+                startAngle, endAngle: startAngle + sweep,
+                data: child, level: 0, color
+            });
+
+            // Level 1: grandchildren (if cached)
+            const childData = treeCache[child.path];
+            if (childData && childData.children) {
+                let subStart = startAngle;
+                const childTotal = child.size || 1;
+                const subChildren = childData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
+                subChildren.forEach((gc, gi) => {
+                    const subSweep = (gc.size / totalSize) * Math.PI * 2;
+                    if (subSweep < 0.005) { subStart += subSweep; return; }
+
+                    const subColor = adjustBrightness(color, gi % 2 === 0 ? -15 : 15);
+                    const sr0 = innerRadius + ringWidth;
+                    const sr1 = innerRadius + ringWidth * 2;
+
+                    drawArc(cx, cy, sr0, sr1, subStart, subStart + subSweep, subColor, 0.85);
+                    sunburstRings.push({
+                        cx, cy, r0: sr0, r1: sr1,
+                        startAngle: subStart, endAngle: subStart + subSweep,
+                        data: gc, level: 1, color: subColor
+                    });
+
+                    // Level 2: great-grandchildren
+                    const gcData = treeCache[gc.path];
+                    if (gcData && gcData.children) {
+                        let ggStart = subStart;
+                        const ggChildren = gcData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
+                        ggChildren.forEach((ggc, ggi) => {
+                            const ggSweep = (ggc.size / totalSize) * Math.PI * 2;
+                            if (ggSweep < 0.005) { ggStart += ggSweep; return; }
+
+                            const ggColor = adjustBrightness(subColor, ggi % 2 === 0 ? -10 : 10);
+                            const gr0 = innerRadius + ringWidth * 2;
+                            const gr1 = innerRadius + ringWidth * 3;
+
+                            drawArc(cx, cy, gr0, gr1, ggStart, ggStart + ggSweep, ggColor, 0.8);
+                            sunburstRings.push({
+                                cx, cy, r0: gr0, r1: gr1,
+                                startAngle: ggStart, endAngle: ggStart + ggSweep,
+                                data: ggc, level: 2, color: ggColor
+                            });
+
+                            ggStart += ggSweep;
+                        });
+                    }
+
+                    subStart += subSweep;
+                });
+            }
+
+            startAngle += sweep;
+        });
+
+        // Center circle
+        ctx.beginPath();
+        ctx.arc(cx, cy, innerRadius - 2, 0, Math.PI * 2);
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-surface').trim() || '#161b22';
+        ctx.fill();
+
+        // Center label
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-primary').trim() || '#e6edf3';
+        ctx.font = '600 12px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        let centerLabel = rootData.name;
+        if (ctx.measureText(centerLabel).width > innerRadius * 1.6) {
+            centerLabel = centerLabel.slice(0, 8) + '\u2026';
+        }
+        ctx.fillText(centerLabel, cx, cy - 8);
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-secondary').trim() || '#8b949e';
+        ctx.font = '11px JetBrains Mono, monospace';
+        ctx.fillText(rootData.size_human, cx, cy + 8);
+
+        // Progressively fetch deeper levels
+        fetchSunburstLevels(rootData);
+    }
+
+    async function fetchSunburstLevels(rootData) {
+        if (!rootData || !rootData.children) return;
+        const totalSize = rootData.size || 1;
+
+        // Fetch level 1 (grandchildren) for items > 2%
+        const toFetch1 = rootData.children.filter(c => c.has_children && (c.size / totalSize) > 0.02 && !treeCache[c.path]);
+        const fetched1 = await Promise.all(toFetch1.map(c => fetchTreeNode(c.path)));
+        if (fetched1.some(d => d)) {
+            drawSunburst(rootData); // Redraw with new data
+        }
+
+        // Fetch level 2 (great-grandchildren) for items > 2%
+        const toFetch2 = [];
+        rootData.children.forEach(c => {
+            const cData = treeCache[c.path];
+            if (cData && cData.children) {
+                cData.children.forEach(gc => {
+                    if (gc.has_children && (gc.size / totalSize) > 0.02 && !treeCache[gc.path]) {
+                        toFetch2.push(gc);
+                    }
+                });
+            }
+        });
+        const fetched2 = await Promise.all(toFetch2.map(c => fetchTreeNode(c.path)));
+        if (fetched2.some(d => d)) {
+            drawSunburst(rootData); // Redraw with new data
+        }
+    }
+
+    function drawArc(cx, cy, r0, r1, start, end, color, alpha) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r1, start, end);
+        ctx.arc(cx, cy, r0, end, start, true);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = alpha;
+        ctx.fill();
+
+        // Thin border
+        ctx.globalAlpha = 0.15;
+        ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--bg-root').trim() || '#0d1117';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.globalAlpha = 1;
+    }
+
+    function adjustBrightness(hex, amount) {
+        let r = parseInt(hex.slice(1, 3), 16);
+        let g = parseInt(hex.slice(3, 5), 16);
+        let b = parseInt(hex.slice(5, 7), 16);
+        r = Math.max(0, Math.min(255, r + amount));
+        g = Math.max(0, Math.min(255, g + amount));
+        b = Math.max(0, Math.min(255, b + amount));
+        return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+    }
+
+    // Sunburst hit detection
+    function sunburstHitTest(x, y) {
+        if (sunburstRings.length === 0) return null;
+        const ring0 = sunburstRings[0];
+        const cx = ring0.cx, cy = ring0.cy;
+        const dx = x - cx, dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        let angle = Math.atan2(dy, dx);
+
+        for (const seg of sunburstRings) {
+            if (dist >= seg.r0 && dist <= seg.r1) {
+                // Normalize angle to match segment range
+                let a = angle;
+                let s = seg.startAngle;
+                let e = seg.endAngle;
+                // Normalize to same range
+                while (a < s) a += Math.PI * 2;
+                while (a > s + Math.PI * 2) a -= Math.PI * 2;
+                if (a >= s && a <= e) return seg;
+            }
+        }
+
+        // Check center circle
+        if (dist < 55) {
+            return { isCenter: true };
+        }
+
+        return null;
+    }
+
+    // Canvas events
+    canvas.addEventListener('mousemove', e => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        const hit = sunburstHitTest(x, y);
+
+        if (hit && !hit.isCenter && hit.data) {
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.clientX + 12) + 'px';
+            tooltip.style.top = (e.clientY + 12) + 'px';
+            tooltipName.textContent = hit.data.name;
+            let detail = hit.data.size_human + ' \u00b7 ' + hit.data.percent.toFixed(1) + '%';
+            if (hit.data.newest_mtime) {
+                detail += '<br>Modified: ' + formatDate(hit.data.newest_mtime);
+            }
+            detail += '<br>' + formatNum(hit.data.file_count) + ' files \u00b7 ' + formatNum(hit.data.dir_count) + ' dirs';
+            tooltipDetail.innerHTML = detail;
+            canvas.style.cursor = hit.data.has_children ? 'pointer' : 'default';
+
+            // Highlight: redraw with brightness
+            if (sunburstHovered !== hit) {
+                sunburstHovered = hit;
+                redrawSunburstHighlight();
+            }
+        } else if (hit && hit.isCenter) {
+            tooltip.style.display = 'none';
+            canvas.style.cursor = 'pointer';
+            sunburstHovered = null;
+        } else {
+            tooltip.style.display = 'none';
+            canvas.style.cursor = 'default';
+            if (sunburstHovered) {
+                sunburstHovered = null;
+                redrawSunburstHighlight();
+            }
+        }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+        sunburstHovered = null;
+        if (leftColumnData) drawSunburst(leftColumnData);
+    });
+
+    canvas.addEventListener('click', e => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const hit = sunburstHitTest(x, y);
+
+        if (hit) {
+            if (hit.isCenter) {
+                navigateUp();
+            } else if (hit.data && hit.data.has_children) {
+                navigateTo(hit.data.path);
+            }
+        }
+    });
+
+    function redrawSunburstHighlight() {
+        if (!leftColumnData) return;
+        drawSunburst(leftColumnData);
+        if (!sunburstHovered || !sunburstHovered.data) return;
+
+        // Draw highlight on hovered segment
+        const seg = sunburstHovered;
+        ctx.beginPath();
+        ctx.arc(seg.cx, seg.cy, seg.r1 + 2, seg.startAngle, seg.endAngle);
+        ctx.arc(seg.cx, seg.cy, seg.r0 - 1, seg.endAngle, seg.startAngle, true);
+        ctx.closePath();
+        ctx.fillStyle = adjustBrightness(seg.color, 40);
+        ctx.globalAlpha = 0.95;
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    // Resize
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (leftColumnData) drawSunburst(leftColumnData);
+        }, 100);
+    });
+
+    // --- View toggle ---
+    $('viewFolders').addEventListener('click', () => setViewMode('folders'));
+    $('viewBiggest').addEventListener('click', () => setViewMode('biggest'));
+
+    function setViewMode(mode) {
+        viewMode = mode;
+        document.querySelectorAll('.view-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === mode);
+        });
+        document.body.classList.toggle('view-biggest', mode === 'biggest');
+
+        if (mode === 'biggest') {
+            loadBiggestFiles();
+        } else {
+            loadLeftColumn(currentPath);
+        }
+    }
+
+    async function loadBiggestFiles() {
+        // Flatten all cached entries, collect leaf nodes, sort by size
+        leftColHeader.textContent = 'Biggest Files';
+        rightColHeader.textContent = '\u00a0';
+        rightColBody.innerHTML = '';
+
+        const files = [];
+        for (const path in treeCache) {
+            const data = treeCache[path];
+            if (!data || !data.children) continue;
+            data.children.forEach(child => {
+                if (!child.has_children) {
+                    files.push(child);
+                }
+            });
+        }
+
+        // Dedupe by path
+        const seen = new Set();
+        const unique = [];
+        files.sort((a, b) => b.size - a.size);
+        files.forEach(f => {
+            if (!seen.has(f.path)) {
+                seen.add(f.path);
+                unique.push(f);
+            }
+        });
+
+        leftColBody.innerHTML = '';
+        unique.slice(0, 200).forEach((child, i) => {
+            leftColBody.appendChild(createBrowserRow(child, 'left', i));
+        });
+
+        if (unique.length === 0) {
+            leftColBody.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center;font-size:13px">Scan more folders to populate this view</div>';
+        }
     }
 
     // --- Context menu ---
@@ -790,7 +891,6 @@
         contextMenu.style.display = 'block';
         contextMenu.style.left = e.clientX + 'px';
         contextMenu.style.top = e.clientY + 'px';
-        // Keep in viewport
         const rect = contextMenu.getBoundingClientRect();
         if (rect.right > window.innerWidth) contextMenu.style.left = (e.clientX - rect.width) + 'px';
         if (rect.bottom > window.innerHeight) contextMenu.style.top = (e.clientY - rect.height) + 'px';
@@ -803,28 +903,21 @@
 
     document.addEventListener('click', hideContextMenu);
     document.addEventListener('contextmenu', (e) => {
-        // Only show custom menu on our elements, not default
-        if (!e.target.closest('.tree-node') && !e.target.closest('.list-item') && !e.target.closest('.smart-item')) {
+        if (!e.target.closest('.browser-row') && !e.target.closest('.smart-item')) {
             hideContextMenu();
         }
     });
 
     $('ctxCopyPath').addEventListener('click', () => {
-        if (ctxTarget) {
-            navigator.clipboard.writeText(ctxTarget.path).catch(() => {});
-        }
+        if (ctxTarget) navigator.clipboard.writeText(ctxTarget.path).catch(() => {});
     });
 
     $('ctxOpenExplorer').addEventListener('click', () => {
-        if (ctxTarget) {
-            fetch('/api/open?path=' + encodeURIComponent(ctxTarget.path));
-        }
+        if (ctxTarget) fetch('/api/open?path=' + encodeURIComponent(ctxTarget.path));
     });
 
     $('ctxDelete').addEventListener('click', () => {
-        if (ctxTarget) {
-            confirmDelete(ctxTarget.path, ctxTarget.name, ctxTarget.size_human);
-        }
+        if (ctxTarget) confirmDelete(ctxTarget.path, ctxTarget.name, ctxTarget.size_human);
     });
 
     // --- Smart cleanup ---
@@ -838,56 +931,26 @@
             smartTotal.textContent = data.total_size_human + ' recoverable';
             smartList.innerHTML = '';
             if (data.items.length === 0) {
-                smartList.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center">No cleanup suggestions found</div>';
+                smartList.innerHTML = '<div style="padding:20px;color:var(--text-muted);text-align:center">No cleanup suggestions</div>';
                 return;
             }
             data.items.forEach(item => {
                 const el = document.createElement('div');
                 el.className = 'smart-item';
-
                 const badge = document.createElement('span');
                 badge.className = 'smart-badge ' + item.category;
                 badge.textContent = item.category;
-
                 const info = document.createElement('div');
                 info.className = 'smart-info';
-                const name = document.createElement('div');
-                name.className = 'smart-name';
-                name.textContent = item.name;
-                const path = document.createElement('div');
-                path.className = 'smart-path';
-                path.textContent = item.path;
-                const desc = document.createElement('div');
-                desc.className = 'smart-desc';
-                desc.textContent = item.description + ' · ' + formatNum(item.file_count) + ' files';
-                info.appendChild(name);
-                info.appendChild(path);
-                info.appendChild(desc);
-
+                info.innerHTML = `<div class="smart-name">${escHtml(item.name)}</div><div class="smart-path">${escHtml(item.path)}</div><div class="smart-desc">${escHtml(item.description)} \u00b7 ${formatNum(item.file_count)} files</div>`;
                 const size = document.createElement('span');
                 size.className = 'smart-size';
                 size.textContent = item.size_human;
-
                 el.appendChild(badge);
                 el.appendChild(info);
                 el.appendChild(size);
-
-                // Click navigates to that path in explorer
-                el.addEventListener('click', () => {
-                    smartOverlay.classList.remove('open');
-                    navigateTo(item.path);
-                });
-
-                // Right-click context menu
-                el.addEventListener('contextmenu', (e) => {
-                    showContextMenu(e, {
-                        path: item.path,
-                        name: item.name,
-                        size_human: item.size_human,
-                        has_children: true
-                    });
-                });
-
+                el.addEventListener('click', () => { smartOverlay.classList.remove('open'); navigateTo(item.path); });
+                el.addEventListener('contextmenu', (e) => showContextMenu(e, { path: item.path, name: item.name, size_human: item.size_human, has_children: true }));
                 smartList.appendChild(el);
             });
         } catch (e) {
@@ -897,11 +960,9 @@
 
     smartBtn.addEventListener('click', openSmart);
     smartClose.addEventListener('click', () => smartOverlay.classList.remove('open'));
-    smartOverlay.addEventListener('click', e => {
-        if (e.target === smartOverlay) smartOverlay.classList.remove('open');
-    });
+    smartOverlay.addEventListener('click', e => { if (e.target === smartOverlay) smartOverlay.classList.remove('open'); });
 
-    // --- Search command palette (Ctrl+K) ---
+    // --- Search ---
     const searchOverlay = $('searchOverlay');
     const searchInput2 = $('searchInput');
     const searchResults = $('searchResults');
@@ -914,9 +975,7 @@
         setTimeout(() => searchInput2.focus(), 50);
     }
 
-    function closeSearch() {
-        searchOverlay.classList.remove('open');
-    }
+    function closeSearch() { searchOverlay.classList.remove('open'); }
 
     searchInput2.addEventListener('input', () => {
         clearTimeout(searchDebounce);
@@ -938,53 +997,20 @@
                 results.forEach(item => {
                     const el = document.createElement('div');
                     el.className = 'search-item';
-
-                    const icon = document.createElement('span');
-                    icon.className = 'search-item-icon';
-                    icon.textContent = item.has_children ? '📁' : '📄';
-
-                    const info = document.createElement('div');
-                    info.className = 'search-item-info';
-                    const name = document.createElement('div');
-                    name.className = 'search-item-name';
-                    name.textContent = item.name;
-                    const path = document.createElement('div');
-                    path.className = 'search-item-path';
-                    path.textContent = item.path;
-                    info.appendChild(name);
-                    info.appendChild(path);
-
-                    const size = document.createElement('span');
-                    size.className = 'search-item-size';
-                    size.textContent = item.size_human;
-
-                    el.appendChild(icon);
-                    el.appendChild(info);
-                    el.appendChild(size);
-
+                    el.innerHTML = `<span class="search-item-icon">${item.has_children ? '\uD83D\uDCC1' : '\uD83D\uDCC4'}</span><div class="search-item-info"><div class="search-item-name">${escHtml(item.name)}</div><div class="search-item-path">${escHtml(item.path)}</div></div><span class="search-item-size">${item.size_human}</span>`;
                     el.addEventListener('click', () => {
                         closeSearch();
-                        if (item.has_children) {
-                            navigateTo(item.path);
-                        } else {
-                            // Navigate to parent
-                            const parts = item.path.split('/');
-                            parts.pop();
-                            navigateTo(parts.join('/') || '/');
-                        }
+                        if (item.has_children) navigateTo(item.path);
+                        else { const parts = item.path.split('/'); parts.pop(); navigateTo(parts.join('/') || '/'); }
                     });
-
                     searchResults.appendChild(el);
                 });
             } catch (e) {}
         }, 200);
     });
 
-    searchOverlay.addEventListener('click', e => {
-        if (e.target === searchOverlay) closeSearch();
-    });
-
-    $('searchHint').addEventListener('click', openSearch);
+    searchOverlay.addEventListener('click', e => { if (e.target === searchOverlay) closeSearch(); });
+    $('searchBtn').addEventListener('click', openSearch);
 
     // --- File types ---
     const typesOverlay = $('typesOverlay');
@@ -1002,25 +1028,7 @@
             data.types.slice(0, 50).forEach(t => {
                 const el = document.createElement('div');
                 el.className = 'type-item';
-
-                const ext = document.createElement('span');
-                ext.className = 'type-ext';
-                ext.textContent = '.' + t.extension;
-
-                const barWrap = document.createElement('div');
-                barWrap.className = 'type-bar-wrap';
-                const bar = document.createElement('div');
-                bar.className = 'type-bar';
-                bar.style.width = Math.max(1, (t.size / maxSize) * 100) + '%';
-                barWrap.appendChild(bar);
-
-                const meta = document.createElement('span');
-                meta.className = 'type-meta';
-                meta.innerHTML = t.size_human + '<br><span class="type-count">' + formatNum(t.count) + ' files</span>';
-
-                el.appendChild(ext);
-                el.appendChild(barWrap);
-                el.appendChild(meta);
+                el.innerHTML = `<span class="type-ext">.${escHtml(t.extension)}</span><div class="type-bar-wrap"><div class="type-bar" style="width:${Math.max(1, (t.size / maxSize) * 100)}%"></div></div><span class="type-meta">${t.size_human}<br><span class="type-count">${formatNum(t.count)} files</span></span>`;
                 typesList.appendChild(el);
             });
         } catch (e) {
@@ -1030,11 +1038,9 @@
 
     $('typesBtn').addEventListener('click', openTypes);
     $('typesClose').addEventListener('click', () => typesOverlay.classList.remove('open'));
-    typesOverlay.addEventListener('click', e => {
-        if (e.target === typesOverlay) typesOverlay.classList.remove('open');
-    });
+    typesOverlay.addEventListener('click', e => { if (e.target === typesOverlay) typesOverlay.classList.remove('open'); });
 
-    // --- Delete confirmation ---
+    // --- Delete ---
     const deleteOverlay = $('deleteOverlay');
     let pendingDeletePath = null;
 
@@ -1044,10 +1050,7 @@
         deleteOverlay.classList.add('open');
     }
 
-    $('deleteCancel').addEventListener('click', () => {
-        deleteOverlay.classList.remove('open');
-        pendingDeletePath = null;
-    });
+    $('deleteCancel').addEventListener('click', () => { deleteOverlay.classList.remove('open'); pendingDeletePath = null; });
 
     $('deleteConfirm').addEventListener('click', async () => {
         if (!pendingDeletePath) return;
@@ -1063,8 +1066,12 @@
             const result = await resp.json();
             if (result.success) {
                 deleteOverlay.classList.remove('open');
-                // Rescan current view
-                fetchTree(currentPath);
+                // Remove from selection if selected
+                selectedPaths.delete(pendingDeletePath);
+                updateActionBar();
+                // Invalidate cache
+                delete treeCache[currentPath];
+                loadLeftColumn(currentPath);
             } else {
                 alert('Delete failed: ' + result.message);
             }
@@ -1076,14 +1083,93 @@
         pendingDeletePath = null;
     });
 
-    deleteOverlay.addEventListener('click', e => {
-        if (e.target === deleteOverlay) {
-            deleteOverlay.classList.remove('open');
-            pendingDeletePath = null;
+    deleteOverlay.addEventListener('click', e => { if (e.target === deleteOverlay) { deleteOverlay.classList.remove('open'); pendingDeletePath = null; } });
+
+    // --- Review to Remove ---
+    reviewBtn.addEventListener('click', openReview);
+
+    function openReview() {
+        if (selectedPaths.size === 0) return;
+        const overlay = $('reviewOverlay');
+        const list = $('reviewList');
+        const total = $('reviewTotal');
+
+        let totalSize = 0;
+        selectedPaths.forEach(v => totalSize += v.size);
+        total.textContent = formatSize(totalSize);
+
+        list.innerHTML = '';
+        selectedPaths.forEach((info, path) => {
+            const el = document.createElement('div');
+            el.className = 'review-item';
+            el.innerHTML = `<div class="review-info"><div class="review-name">${escHtml(info.name)}</div><div class="review-path">${escHtml(path)}</div></div><span class="review-size">${info.size_human}</span>`;
+            const uncheckBtn = document.createElement('button');
+            uncheckBtn.className = 'review-uncheck';
+            uncheckBtn.textContent = 'Remove';
+            uncheckBtn.addEventListener('click', () => {
+                selectedPaths.delete(path);
+                updateActionBar();
+                el.remove();
+                // Update total
+                let newTotal = 0;
+                selectedPaths.forEach(v => newTotal += v.size);
+                total.textContent = formatSize(newTotal);
+                if (selectedPaths.size === 0) overlay.classList.remove('open');
+                // Update checkboxes in browser
+                refreshCheckboxes();
+            });
+            el.appendChild(uncheckBtn);
+            list.appendChild(el);
+        });
+
+        overlay.classList.add('open');
+    }
+
+    $('reviewClose').addEventListener('click', () => $('reviewOverlay').classList.remove('open'));
+    $('reviewOverlay').addEventListener('click', e => { if (e.target === $('reviewOverlay')) $('reviewOverlay').classList.remove('open'); });
+
+    $('reviewDeleteAll').addEventListener('click', async () => {
+        const btn = $('reviewDeleteAll');
+        btn.textContent = 'Deleting...';
+        btn.disabled = true;
+
+        const paths = [...selectedPaths.keys()];
+        for (const path of paths) {
+            try {
+                const resp = await fetch('/api/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    selectedPaths.delete(path);
+                }
+            } catch (e) {}
         }
+
+        btn.textContent = 'Delete All Selected';
+        btn.disabled = false;
+        updateActionBar();
+        $('reviewOverlay').classList.remove('open');
+
+        // Refresh view
+        delete treeCache[currentPath];
+        loadLeftColumn(currentPath);
     });
 
-    // --- Theme toggle (light/dark) ---
+    function refreshCheckboxes() {
+        document.querySelectorAll('.row-checkbox').forEach(cb => {
+            const row = cb.closest('.browser-row');
+            if (row) {
+                const path = row.dataset.path;
+                cb.classList.toggle('checked', selectedPaths.has(path));
+                cb.textContent = selectedPaths.has(path) ? '\u2713' : '';
+            }
+        });
+    }
+
+    // --- Theme toggle ---
     const themeToggle = $('themeToggle');
     const themeIcon = $('themeIcon');
     let isDark = localStorage.getItem('ddcleaner-theme') !== 'light';
@@ -1094,7 +1180,6 @@
         localStorage.setItem('ddcleaner-theme', isDark ? 'dark' : 'light');
     }
 
-    // Respect system preference on first visit
     if (!localStorage.getItem('ddcleaner-theme')) {
         isDark = !window.matchMedia('(prefers-color-scheme: light)').matches;
     }
@@ -1103,83 +1188,114 @@
     themeToggle.addEventListener('click', () => {
         isDark = !isDark;
         applyTheme();
-        // Redraw treemap with updated colors
-        requestAnimationFrame(() => layoutTreemap());
+        if (leftColumnData) requestAnimationFrame(() => drawSunburst(leftColumnData));
     });
 
     // --- Keyboard ---
     document.addEventListener('keydown', e => {
-        // Ctrl+K / Cmd+K: search
-        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-            e.preventDefault();
-            openSearch();
-            return;
-        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); openSearch(); return; }
 
-        // Close overlays
         if (e.key === 'Escape') {
             if (searchOverlay.classList.contains('open')) { closeSearch(); return; }
             if (deleteOverlay.classList.contains('open')) { deleteOverlay.classList.remove('open'); return; }
             if (typesOverlay.classList.contains('open')) { typesOverlay.classList.remove('open'); return; }
             if (smartOverlay.classList.contains('open')) { smartOverlay.classList.remove('open'); return; }
+            if ($('reviewOverlay').classList.contains('open')) { $('reviewOverlay').classList.remove('open'); return; }
             if (shortcutsOverlay.classList.contains('open')) { shortcutsOverlay.classList.remove('open'); return; }
             navigateUp();
             return;
         }
 
-        if (e.key === '?') {
-            shortcutsOverlay.classList.toggle('open');
-            return;
-        }
+        if (e.key === '?') { shortcutsOverlay.classList.toggle('open'); return; }
 
-        // Don't capture when typing in input
         if (e.target.tagName === 'INPUT') return;
 
-        if (e.key === 'Backspace') {
-            navigateUp();
-            e.preventDefault();
-            return;
-        }
-
+        if (e.key === 'Backspace') { navigateUp(); e.preventDefault(); return; }
         if (e.key === 'r' || e.key === 'R') { rescan(); return; }
         if (e.key === 's' || e.key === 'S') { openSmart(); return; }
         if (e.key === 'f' || e.key === 'F') { openTypes(); return; }
-        if (e.key === 't' || e.key === 'T') { isDark = !isDark; applyTheme(); requestAnimationFrame(() => layoutTreemap()); return; }
+        if (e.key === 't' || e.key === 'T') {
+            isDark = !isDark; applyTheme();
+            if (leftColumnData) requestAnimationFrame(() => drawSunburst(leftColumnData));
+            return;
+        }
 
-        // Layout shortcuts
-        if (e.key === '1') { setLayout('explorer'); return; }
-        if (e.key === '2') { setLayout('classic'); return; }
-        if (e.key === '3') { setLayout('list'); return; }
+        // Arrow keys for browser navigation
+        const data = activeColumn === 'left' ? leftColumnData : rightColumnData;
+        const idx = activeColumn === 'left' ? selectedLeftIndex : selectedRightIndex;
+        const body = activeColumn === 'left' ? leftColBody : rightColBody;
 
-        if (!treeData || !treeData.children) return;
+        if (!data || !data.children) return;
 
         if (e.key === 'ArrowDown') {
             e.preventDefault();
-            selectedIndex = Math.min(selectedIndex + 1, treeData.children.length - 1);
-            highlightSelected();
-            scrollToSelected();
+            const newIdx = Math.min(idx + 1, data.children.length - 1);
+            if (activeColumn === 'left') selectedLeftIndex = newIdx;
+            else selectedRightIndex = newIdx;
+            highlightBrowserRow(body, newIdx);
         }
 
         if (e.key === 'ArrowUp') {
             e.preventDefault();
-            selectedIndex = Math.max(selectedIndex - 1, 0);
-            highlightSelected();
-            scrollToSelected();
+            const newIdx = Math.max(idx - 1, 0);
+            if (activeColumn === 'left') selectedLeftIndex = newIdx;
+            else selectedRightIndex = newIdx;
+            highlightBrowserRow(body, newIdx);
         }
 
-        if (e.key === 'Enter' && selectedIndex >= 0) {
-            const child = treeData.children[selectedIndex];
-            if (child && child.has_children) {
-                navigateTo(child.path);
+        if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            if (activeColumn === 'left' && rightColumnData) {
+                activeColumn = 'right';
+                selectedRightIndex = 0;
+                highlightBrowserRow(rightColBody, 0);
+            }
+        }
+
+        if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            if (activeColumn === 'right') {
+                activeColumn = 'left';
+                highlightBrowserRow(leftColBody, selectedLeftIndex);
+            }
+        }
+
+        if (e.key === 'Enter') {
+            const curIdx = activeColumn === 'left' ? selectedLeftIndex : selectedRightIndex;
+            const curData = activeColumn === 'left' ? leftColumnData : rightColumnData;
+            if (curData && curIdx >= 0 && curIdx < curData.children.length) {
+                const child = curData.children[curIdx];
+                if (child.has_children) {
+                    if (activeColumn === 'left') {
+                        highlightActiveLeft(child.path);
+                        loadRightColumn(child.path);
+                    } else {
+                        navigateTo(child.path);
+                    }
+                }
+            }
+        }
+
+        if (e.key === ' ') {
+            e.preventDefault();
+            const curIdx = activeColumn === 'left' ? selectedLeftIndex : selectedRightIndex;
+            const curData = activeColumn === 'left' ? leftColumnData : rightColumnData;
+            if (curData && curIdx >= 0 && curIdx < curData.children.length) {
+                const child = curData.children[curIdx];
+                const rows = (activeColumn === 'left' ? leftColBody : rightColBody).querySelectorAll('.browser-row');
+                const row = rows[curIdx];
+                if (row) {
+                    const cb = row.querySelector('.row-checkbox');
+                    toggleSelection(child, cb);
+                }
             }
         }
     });
 
-    function scrollToSelected() {
-        const items = listContainer.querySelectorAll('.list-item');
-        if (items[selectedIndex]) {
-            items[selectedIndex].scrollIntoView({ block: 'nearest' });
-        }
+    function highlightBrowserRow(container, index) {
+        const rows = container.querySelectorAll('.browser-row');
+        rows.forEach((row, i) => row.classList.toggle('selected', i === index));
+        if (rows[index]) rows[index].scrollIntoView({ block: 'nearest' });
     }
 
     // --- Rescan ---
@@ -1188,7 +1304,7 @@
         startScan(rootPath);
     }
 
-    rescanBtn.onclick = rescan;
+    rescanBtn.addEventListener('click', rescan);
 
     // --- Scan form ---
     scanBtn.onclick = () => {
@@ -1203,12 +1319,17 @@
         }
     });
 
-    shortcutHint.onclick = () => shortcutsOverlay.classList.toggle('open');
-    shortcutsOverlay.onclick = e => {
-        if (e.target === shortcutsOverlay) shortcutsOverlay.classList.remove('open');
-    };
+    $('shortcutHint').addEventListener('click', () => shortcutsOverlay.classList.toggle('open'));
+    shortcutsOverlay.addEventListener('click', e => { if (e.target === shortcutsOverlay) shortcutsOverlay.classList.remove('open'); });
 
-    // --- Auto-start: check if server already has a scan ---
+    // --- HTML escape ---
+    function escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // --- Auto-start ---
     async function init() {
         try {
             const resp = await fetch('/api/status');
@@ -1221,18 +1342,20 @@
                     if (scanComplete) scanStartedAt = Date.now();
 
                     landing.style.display = 'none';
-                    mainContent.style.display = 'flex';
-                    breadcrumbBar.style.display = 'flex';
-                    bottomBar.style.display = 'flex';
+                    appLayout.style.display = 'flex';
 
                     updateStatus(data);
                     connectSSE();
-                    fetchTree(currentPath);
+                    loadLeftColumn(currentPath);
+                    fetchDiskInfo();
+                    updateSidebar();
+
+                    // After left column loads, update sidebar with folder shortcuts
+                    setTimeout(() => updateSidebar(), 1500);
                     return;
                 }
             }
         } catch (e) {}
-        // Show landing
         landing.style.display = 'flex';
     }
 

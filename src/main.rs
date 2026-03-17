@@ -60,6 +60,7 @@ async fn main() {
         .route("/api/search", get(api::handle_search))
         .route("/api/types", get(api::handle_types))
         .route("/api/delete", post(api::handle_delete))
+        .route("/api/diskinfo", get(api::handle_diskinfo))
         .fallback(embedded::static_handler)
         .layer(Extension(shared_tree));
 

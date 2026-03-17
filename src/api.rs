@@ -48,6 +48,7 @@ pub struct TreeChild {
     pub file_count: u64,
     pub dir_count: u64,
     pub has_children: bool,
+    pub newest_mtime: u64,
 }
 
 #[derive(Serialize)]
@@ -151,6 +152,7 @@ pub async fn handle_tree(
                 file_count: child.file_count,
                 dir_count: child.dir_count,
                 has_children: !child.children.is_empty(),
+                newest_mtime: child.newest_mtime,
             }
         })
         .collect();
@@ -171,6 +173,7 @@ pub async fn handle_tree(
             file_count: 1,
             dir_count: 0,
             has_children: false,
+            newest_mtime: file.mtime,
         });
     }
 
@@ -413,6 +416,7 @@ pub async fn handle_search(
                 file_count: node.file_count,
                 dir_count: node.dir_count,
                 has_children: !node.children.is_empty(),
+                newest_mtime: node.newest_mtime,
             });
         }
 
@@ -434,6 +438,7 @@ pub async fn handle_search(
                     file_count: 1,
                     dir_count: 0,
                     has_children: false,
+                    newest_mtime: file.mtime,
                 });
             }
         }
@@ -554,5 +559,44 @@ pub async fn handle_delete(
             success: false,
             message: format!("Failed to delete: {}", e),
         })),
+    }
+}
+
+// --- Disk info endpoint ---
+
+#[derive(Serialize)]
+pub struct DiskInfoResponse {
+    pub total: u64,
+    pub available: u64,
+    pub used: u64,
+    pub total_human: String,
+    pub available_human: String,
+    pub filesystem: String,
+}
+
+pub async fn handle_diskinfo(
+    Extension(tree): Extension<SharedTree>,
+) -> Result<Json<DiskInfoResponse>, StatusCode> {
+    let root_path = {
+        let t = tree.read().await;
+        t.root_path.clone()
+    };
+
+    match nix::sys::statvfs::statvfs(root_path.as_str()) {
+        Ok(stat) => {
+            let block_size = stat.fragment_size() as u64;
+            let total = stat.blocks() as u64 * block_size;
+            let available = stat.blocks_available() as u64 * block_size;
+            let used = total.saturating_sub(available);
+            Ok(Json(DiskInfoResponse {
+                total,
+                available,
+                used,
+                total_human: format_size(total, BINARY),
+                available_human: format_size(available, BINARY),
+                filesystem: root_path,
+            }))
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
