@@ -155,7 +155,10 @@ fn scan_blocking(tree: SharedTree, root_path: &str) {
 
         let components: Vec<String> = relative.split('/').map(|s| s.to_string()).collect();
         let size = if metadata.is_file() {
-            metadata.len()
+            // Use actual disk blocks (handles sparse files correctly)
+            // blocks() returns 512-byte blocks on Linux
+            let blocks_size = metadata.blocks() * 512;
+            if blocks_size > 0 { blocks_size } else { metadata.len() }
         } else {
             0
         };

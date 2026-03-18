@@ -83,18 +83,35 @@
     let ctxTarget = null;
 
     // --- Color helpers ---
-    const SUNBURST_COLORS = [
-        '#5E6AD2', // indigo
-        '#30D1A4', // teal
-        '#E8772E', // orange
-        '#E5484D', // red
-        '#8B5CF6', // violet
-        '#3B82F6', // blue
-        '#F59E0B', // amber
-        '#EC4899', // pink
-        '#06B6D4', // cyan
-        '#84CC16', // lime
-    ];
+    // Base hues for top-level directories (12 evenly spaced, saturation 72%, lightness 58%)
+    const SUNBURST_BASE_HUES = [0, 30, 55, 120, 165, 200, 240, 270, 300, 330];
+    const SUNBURST_SAT = 72;
+    const SUNBURST_LIG = 58;
+
+    function hsl(h, s, l) { return `hsl(${h}, ${s}%, ${l}%)`; }
+
+    // Get the base color for a top-level directory by index
+    function sunburstBaseColor(index) {
+        const h = SUNBURST_BASE_HUES[index % SUNBURST_BASE_HUES.length];
+        return { h, s: SUNBURST_SAT, l: SUNBURST_LIG };
+    }
+
+    // Vary a base HSL color for a child at a given depth and child index
+    function sunburstChildColor(base, depth, childIndex) {
+        // Shift lightness in alternating directions so adjacent children differ
+        const lShift = ((childIndex % 5) - 2) * 6; // -12, -6, 0, +6, +12
+        const sFade = depth * 5; // reduce saturation slightly per depth
+        return {
+            h: base.h,
+            s: Math.max(30, base.s - sFade),
+            l: Math.max(25, Math.min(80, base.l + lShift)),
+        };
+    }
+
+    function hslToString(c) { return hsl(c.h, c.s, c.l); }
+
+    // File segments use neutral gray
+    const FILE_COLOR = 'hsl(0, 0%, 55%)';
 
     function sizeColorClass(sizeHuman) {
         if (/[GT]iB/.test(sizeHuman)) return 'size-gb';
@@ -220,11 +237,11 @@
     function pollTree() {
         if (state.scanComplete) return;
         setTimeout(async () => {
-            // Clear cache to get fresh data during scanning
-            delete state.treeCache[state.currentPath];
+            // Clear entire cache during scanning so sizes refresh
+            state.treeCache = {};
             await loadDirectory(state.currentPath);
             if (!state.scanComplete) pollTree();
-        }, 800);
+        }, 1200);
     }
 
     async function fetchTreeNode(path) {
@@ -282,14 +299,17 @@
         const sorted = [...data.children].sort((a, b) => b.size - a.size);
         const parentSize = data.size || 1;
 
+        // Show all significant items in the main list (including dotfiles).
+        // Only collapse truly tiny items (< 0.5% of parent AND < 1 MiB).
         const mainItems = [];
         const smallItems = [];
-        const hiddenItems = [];
 
         sorted.forEach(child => {
-            if (child.name.startsWith('.')) hiddenItems.push(child);
-            else if (child.percent < 1) smallItems.push(child);
-            else mainItems.push(child);
+            if (child.percent < 0.5 && child.size < 1048576) {
+                smallItems.push(child);
+            } else {
+                mainItems.push(child);
+            }
         });
 
         mainItems.forEach((child, i) => {
@@ -298,9 +318,6 @@
 
         if (smallItems.length > 0) {
             appendCollapsibleGroup(container, `Small items (${smallItems.length})`, smallItems, mainItems.length, parentSize);
-        }
-        if (hiddenItems.length > 0) {
-            appendCollapsibleGroup(container, `Hidden items (${hiddenItems.length})`, hiddenItems, mainItems.length + smallItems.length, parentSize);
         }
     }
 
@@ -323,7 +340,8 @@
         const icon = document.createElement('span');
         icon.className = 'row-icon';
         icon.innerHTML = child.has_children ? ICONS.folder : ICONS.file;
-        const segColor = SUNBURST_COLORS[index % SUNBURST_COLORS.length];
+        const segBase = sunburstBaseColor(index);
+        const segColor = hslToString(segBase);
         if (child.has_children) {
             icon.style.color = segColor;
         }
@@ -725,72 +743,48 @@
         const cy = rect.height / 2;
         const maxRadius = Math.min(cx, cy) - 20;
         const innerRadius = 65;
-        const depth = 3;
-        const ringWidth = (maxRadius - innerRadius) / depth;
         const GAP = 0.004; // radians gap between segments
+        const MAX_DEPTH = 8;
 
         state.sunburstRings = [];
 
         const totalSize = rootData.size || 1;
-        let startAngle = -Math.PI / 2;
+        const ringWidth = (maxRadius - innerRadius) / MAX_DEPTH;
 
-        const level0 = rootData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
-        level0.forEach((child, i) => {
-            const sweep = (child.size / totalSize) * Math.PI * 2;
-            if (sweep < 0.005) { startAngle += sweep; return; }
+        // Recursive function to draw rings at any depth
+        function drawLevel(children, parentSize, arcStart, arcEnd, depth, baseHue) {
+            if (depth >= MAX_DEPTH) return;
+            const sorted = children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
+            const r0 = innerRadius + ringWidth * depth;
+            const r1 = innerRadius + ringWidth * (depth + 1);
+            const parentArc = arcEnd - arcStart;
+            let angle = arcStart;
 
-            const color = SUNBURST_COLORS[i % SUNBURST_COLORS.length];
-            const r0 = innerRadius;
-            const r1 = innerRadius + ringWidth;
-            const aStart = startAngle + GAP;
-            const aEnd = startAngle + sweep - GAP;
+            sorted.forEach((child, i) => {
+                const sweep = (child.size / parentSize) * parentArc;
+                // Skip segments too small to see (< 0.5 degree)
+                if (sweep < 0.008) { angle += sweep; return; }
 
-            drawArc(cx, cy, r0, r1, aStart, aEnd, color, 0.95);
-            state.sunburstRings.push({ cx, cy, r0, r1, startAngle, endAngle: startAngle + sweep, data: child, level: 0, color });
+                // Color: L0 gets base hue, deeper levels inherit & vary lightness
+                const base = depth === 0 ? sunburstBaseColor(i) : baseHue;
+                const c = depth === 0 ? base : sunburstChildColor(base, depth, i);
+                const color = hslToString(c);
+                const alpha = Math.max(0.55, 0.92 - depth * 0.05);
 
-            // Level 1
-            const childData = state.treeCache[child.path];
-            if (childData && childData.children) {
-                let subStart = startAngle;
-                const subChildren = childData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
-                subChildren.forEach((gc, gi) => {
-                    const subSweep = (gc.size / totalSize) * Math.PI * 2;
-                    if (subSweep < 0.005) { subStart += subSweep; return; }
+                drawArc(cx, cy, r0, r1, angle + GAP, angle + sweep - GAP, color, alpha);
+                state.sunburstRings.push({ cx, cy, r0, r1, startAngle: angle, endAngle: angle + sweep, data: child, level: depth, color });
 
-                    const subColor = adjustBrightness(color, gi % 2 === 0 ? -15 : 15);
-                    const sr0 = innerRadius + ringWidth;
-                    const sr1 = innerRadius + ringWidth * 2;
-                    const sStart = subStart + GAP;
-                    const sEnd = subStart + subSweep - GAP;
+                // Recurse into children if we have cached data
+                const childData = state.treeCache[child.path];
+                if (childData && childData.children && childData.children.length > 0) {
+                    drawLevel(childData.children, childData.size || child.size, angle, angle + sweep, depth + 1, depth === 0 ? base : baseHue);
+                }
 
-                    drawArc(cx, cy, sr0, sr1, sStart, sEnd, subColor, 0.85);
-                    state.sunburstRings.push({ cx, cy, r0: sr0, r1: sr1, startAngle: subStart, endAngle: subStart + subSweep, data: gc, level: 1, color: subColor });
+                angle += sweep;
+            });
+        }
 
-                    // Level 2
-                    const gcData = state.treeCache[gc.path];
-                    if (gcData && gcData.children) {
-                        let ggStart = subStart;
-                        const ggChildren = gcData.children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
-                        ggChildren.forEach((ggc, ggi) => {
-                            const ggSweep = (ggc.size / totalSize) * Math.PI * 2;
-                            if (ggSweep < 0.005) { ggStart += ggSweep; return; }
-
-                            const ggColor = adjustBrightness(subColor, ggi % 2 === 0 ? -10 : 10);
-                            const gr0 = innerRadius + ringWidth * 2;
-                            const gr1 = innerRadius + ringWidth * 3;
-                            const gStart = ggStart + GAP;
-                            const gEnd = ggStart + ggSweep - GAP;
-
-                            drawArc(cx, cy, gr0, gr1, gStart, gEnd, ggColor, 0.75);
-                            state.sunburstRings.push({ cx, cy, r0: gr0, r1: gr1, startAngle: ggStart, endAngle: ggStart + ggSweep, data: ggc, level: 2, color: ggColor });
-                            ggStart += ggSweep;
-                        });
-                    }
-                    subStart += subSweep;
-                });
-            }
-            startAngle += sweep;
-        });
+        drawLevel(rootData.children, totalSize, -Math.PI / 2, Math.PI * 1.5, 0, null);
 
         // Center circle with radial gradient
         const centerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, innerRadius - 2);
@@ -820,27 +814,39 @@
         if (!skipFetch) fetchSunburstLevels(rootData);
     }
 
+    // Recursively fetch tree data for deeper sunburst levels
     async function fetchSunburstLevels(rootData) {
         if (!rootData || !rootData.children) return;
-        const totalSize = rootData.size || 1;
 
-        const toFetch1 = rootData.children.filter(c => c.has_children && (c.size / totalSize) > 0.02 && !state.treeCache[c.path]);
-        const fetched1 = await Promise.all(toFetch1.map(c => fetchTreeNode(c.path)));
-        if (fetched1.some(d => d)) drawSunburst(rootData, true);
+        // Breadth-first fetch: gather all nodes at the frontier that need data
+        async function fetchFrontier(nodes, rootTotal) {
+            const toFetch = nodes.filter(c =>
+                c.has_children && (c.size / rootTotal) > 0.005 && !state.treeCache[c.path]
+            );
+            if (toFetch.length === 0) return false;
+            const results = await Promise.all(toFetch.map(c => fetchTreeNode(c.path)));
+            return results.some(d => d);
+        }
 
-        const toFetch2 = [];
-        rootData.children.forEach(c => {
-            const cData = state.treeCache[c.path];
-            if (cData && cData.children) {
-                cData.children.forEach(gc => {
-                    if (gc.has_children && (gc.size / totalSize) > 0.02 && !state.treeCache[gc.path]) {
-                        toFetch2.push(gc);
-                    }
-                });
-            }
-        });
-        const fetched2 = await Promise.all(toFetch2.map(c => fetchTreeNode(c.path)));
-        if (fetched2.some(d => d)) drawSunburst(rootData, true);
+        const rootTotal = rootData.size || 1;
+
+        // Fetch level by level, up to 8 levels deep
+        let currentLevel = rootData.children;
+        for (let depth = 0; depth < 8; depth++) {
+            const fetched = await fetchFrontier(currentLevel, rootTotal);
+            if (fetched) drawSunburst(rootData, true);
+
+            // Gather next level
+            const nextLevel = [];
+            currentLevel.forEach(c => {
+                const cData = state.treeCache[c.path];
+                if (cData && cData.children) {
+                    cData.children.forEach(gc => nextLevel.push(gc));
+                }
+            });
+            if (nextLevel.length === 0) break;
+            currentLevel = nextLevel;
+        }
     }
 
     function drawArc(cx, cy, r0, r1, start, end, color, alpha) {
@@ -852,16 +858,6 @@
         ctx.globalAlpha = alpha;
         ctx.fill();
         ctx.globalAlpha = 1;
-    }
-
-    function adjustBrightness(hex, amount) {
-        let r = parseInt(hex.slice(1, 3), 16);
-        let g = parseInt(hex.slice(3, 5), 16);
-        let b = parseInt(hex.slice(5, 7), 16);
-        r = Math.max(0, Math.min(255, r + amount));
-        g = Math.max(0, Math.min(255, g + amount));
-        b = Math.max(0, Math.min(255, b + amount));
-        return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
     }
 
     function sunburstHitTest(x, y) {
@@ -953,8 +949,11 @@
         ctx.arc(seg.cx, seg.cy, seg.r1 + 2, seg.startAngle, seg.endAngle);
         ctx.arc(seg.cx, seg.cy, seg.r0 - 1, seg.endAngle, seg.startAngle, true);
         ctx.closePath();
-        ctx.fillStyle = adjustBrightness(seg.color, 40);
-        ctx.globalAlpha = 0.95;
+        // Brighten by painting white overlay on top of the segment color
+        ctx.fillStyle = seg.color;
+        ctx.globalAlpha = 1;
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.fill();
         ctx.restore();
     }
