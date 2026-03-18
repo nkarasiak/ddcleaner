@@ -1,11 +1,34 @@
 use crate::tree::{FileEntry, SharedTree};
 use jwalk::WalkDir;
+use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Instant, UNIX_EPOCH};
 
 const BATCH_SIZE: usize = 1000;
 const PROPAGATE_INTERVAL_MS: u64 = 500;
+
+/// Build a set of mount points backed by virtual/pseudo filesystems that should be skipped.
+fn virtual_mount_points() -> HashSet<String> {
+    let mut skip = HashSet::new();
+    let mounts = match std::fs::read_to_string("/proc/mounts") {
+        Ok(s) => s,
+        Err(_) => return skip,
+    };
+    let virtual_fs: HashSet<&str> = [
+        "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+        "securityfs", "pstore", "bpf", "tracefs", "debugfs", "hugetlbfs",
+        "mqueue", "configfs", "fusectl", "ramfs", "binfmt_misc", "nsfs",
+        "rpc_pipefs", "nfsd", "efivarfs", "autofs", "overlay", "squashfs",
+    ].into_iter().collect();
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && virtual_fs.contains(parts[2]) {
+            skip.insert(parts[1].to_string());
+        }
+    }
+    skip
+}
 
 struct BatchEntry {
     components: Vec<String>,
@@ -32,6 +55,9 @@ fn scan_blocking(tree: SharedTree, root_path: &str) {
         let mut t = tree.blocking_write();
         t.root_device = root_device;
     }
+
+    // Build set of virtual filesystem mount points to skip
+    let virtual_mounts = virtual_mount_points();
 
     let walker = WalkDir::new(root)
         .skip_hidden(false)
@@ -67,6 +93,16 @@ fn scan_blocking(tree: SharedTree, root_path: &str) {
         // Skip root itself
         if path_str == root_path || path_str.as_ref() == root_path.trim_end_matches('/') {
             continue;
+        }
+
+        // Skip virtual filesystem mount points and everything beneath them
+        {
+            let ps = path_str.as_ref();
+            let is_virtual = virtual_mounts.contains(ps)
+                || virtual_mounts.iter().any(|vm| ps.starts_with(vm.as_str()) && ps.as_bytes().get(vm.len()) == Some(&b'/'));
+            if is_virtual {
+                continue;
+            }
         }
 
         // Get metadata

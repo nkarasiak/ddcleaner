@@ -600,3 +600,106 @@ pub async fn handle_diskinfo(
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
+
+// --- Volumes endpoint ---
+
+#[derive(Serialize)]
+pub struct VolumeInfo {
+    pub mount_point: String,
+    pub device: String,
+    pub fs_type: String,
+    pub total: u64,
+    pub available: u64,
+    pub used: u64,
+    pub total_human: String,
+    pub available_human: String,
+    pub used_human: String,
+    pub use_percent: f64,
+    pub label: String,
+}
+
+pub async fn handle_volumes() -> Json<Vec<VolumeInfo>> {
+    let mut volumes = Vec::new();
+
+    // Parse /proc/mounts for real filesystems
+    let mounts = match std::fs::read_to_string("/proc/mounts") {
+        Ok(s) => s,
+        Err(_) => return Json(volumes),
+    };
+
+    // Filesystem types we consider "real" storage
+    let real_fs: HashSet<&str> = [
+        "ext4", "ext3", "ext2", "xfs", "btrfs", "zfs", "f2fs",
+        "ntfs", "ntfs3", "vfat", "fat32", "exfat", "fuseblk",
+        "nfs", "nfs4", "cifs", "smb", "apfs", "hfs", "hfsplus",
+    ].into_iter().collect();
+
+    let mut seen_devices = HashSet::new();
+
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 { continue; }
+
+        let device = parts[0];
+        let mount_point = parts[1];
+        let fs_type = parts[2];
+
+        if !real_fs.contains(fs_type) { continue; }
+        // Skip tiny boot partitions and snap mounts
+        if mount_point.starts_with("/snap/") { continue; }
+        // Deduplicate by device
+        if seen_devices.contains(device) { continue; }
+        seen_devices.insert(device.to_string());
+
+        // Get size info via statvfs
+        match nix::sys::statvfs::statvfs(mount_point) {
+            Ok(stat) => {
+                let block_size = stat.fragment_size() as u64;
+                let total = stat.blocks() as u64 * block_size;
+                let available = stat.blocks_available() as u64 * block_size;
+                let used = total.saturating_sub(available);
+                let use_percent = if total > 0 { (used as f64 / total as f64) * 100.0 } else { 0.0 };
+
+                // Generate a friendly label
+                let label = if mount_point == "/" {
+                    "System Disk".to_string()
+                } else if mount_point.starts_with("/home") {
+                    "Home".to_string()
+                } else if mount_point.starts_with("/boot") {
+                    "Boot".to_string()
+                } else if mount_point.starts_with("/mnt/") || mount_point.starts_with("/media/") {
+                    // Use the last path component
+                    mount_point.rsplit('/').next()
+                        .unwrap_or(mount_point)
+                        .to_string()
+                } else {
+                    mount_point.to_string()
+                };
+
+                volumes.push(VolumeInfo {
+                    mount_point: mount_point.to_string(),
+                    device: device.to_string(),
+                    fs_type: fs_type.to_string(),
+                    total,
+                    available,
+                    used,
+                    total_human: format_size(total, BINARY),
+                    available_human: format_size(available, BINARY),
+                    used_human: format_size(used, BINARY),
+                    use_percent,
+                    label,
+                });
+            }
+            Err(_) => continue,
+        }
+    }
+
+    // Sort: root first, then by total size descending
+    volumes.sort_by(|a, b| {
+        if a.mount_point == "/" { return std::cmp::Ordering::Less; }
+        if b.mount_point == "/" { return std::cmp::Ordering::Greater; }
+        b.total.cmp(&a.total)
+    });
+
+    Json(volumes)
+}

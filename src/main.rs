@@ -13,9 +13,8 @@ use tokio::sync::RwLock;
 #[derive(Parser)]
 #[command(name = "ddcleaner", version = "1.0.0", about = "Blazing fast disk usage analyzer")]
 struct Args {
-    /// Path to scan
-    #[arg(default_value = ".")]
-    path: String,
+    /// Path to scan (optional — shows volume picker if omitted)
+    path: Option<String>,
 
     /// Port to listen on
     #[arg(short, long, default_value_t = 8080)]
@@ -30,24 +29,31 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
-    // Resolve path to absolute
-    let scan_path = std::fs::canonicalize(&args.path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&args.path))
-        .to_string_lossy()
-        .to_string();
-
     println!("ddcleaner v1.0.0 — read-only disk analyzer");
-    println!("Scanning: {}", scan_path);
 
-    let dir_tree = tree::DirTree::new(scan_path.clone());
-    let shared_tree: tree::SharedTree = Arc::new(RwLock::new(dir_tree));
+    let shared_tree: tree::SharedTree;
 
-    // Start scan immediately
-    let scan_tree = shared_tree.clone();
-    let scan_path_clone = scan_path.clone();
-    tokio::spawn(async move {
-        scanner::scan(scan_tree, scan_path_clone).await;
-    });
+    if let Some(ref path) = args.path {
+        // Resolve path to absolute
+        let scan_path = std::fs::canonicalize(path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+            .to_string_lossy()
+            .to_string();
+        println!("Scanning: {}", scan_path);
+
+        let dir_tree = tree::DirTree::new(scan_path.clone());
+        shared_tree = Arc::new(RwLock::new(dir_tree));
+
+        // Start scan immediately
+        let scan_tree = shared_tree.clone();
+        tokio::spawn(async move {
+            scanner::scan(scan_tree, scan_path).await;
+        });
+    } else {
+        println!("No path specified — showing volume picker");
+        let dir_tree = tree::DirTree::new(".".to_string());
+        shared_tree = Arc::new(RwLock::new(dir_tree));
+    };
 
     let app = Router::new()
         .route("/api/scan", get(api::handle_scan))
@@ -61,6 +67,7 @@ async fn main() {
         .route("/api/types", get(api::handle_types))
         .route("/api/delete", post(api::handle_delete))
         .route("/api/diskinfo", get(api::handle_diskinfo))
+        .route("/api/volumes", get(api::handle_volumes))
         .fallback(embedded::static_handler)
         .layer(Extension(shared_tree));
 
