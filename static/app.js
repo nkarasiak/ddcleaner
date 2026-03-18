@@ -96,18 +96,6 @@
         return { h, s: SUNBURST_SAT, l: SUNBURST_LIG };
     }
 
-    // Vary a base HSL color for a child at a given depth and child index
-    function sunburstChildColor(base, depth, childIndex) {
-        // Shift lightness in alternating directions so adjacent children differ
-        const lShift = ((childIndex % 5) - 2) * 6; // -12, -6, 0, +6, +12
-        const sFade = depth * 5; // reduce saturation slightly per depth
-        return {
-            h: base.h,
-            s: Math.max(30, base.s - sFade),
-            l: Math.max(25, Math.min(80, base.l + lShift)),
-        };
-    }
-
     function hslToString(c) { return hsl(c.h, c.s, c.l); }
 
     // File segments use neutral gray
@@ -752,7 +740,8 @@
         const ringWidth = (maxRadius - innerRadius) / MAX_DEPTH;
 
         // Recursive function to draw rings at any depth
-        function drawLevel(children, parentSize, arcStart, arcEnd, depth, baseHue) {
+        // Each directory's children get fresh colors from the palette
+        function drawLevel(children, parentSize, arcStart, arcEnd, depth) {
             if (depth >= MAX_DEPTH) return;
             const sorted = children.filter(c => c.size > 0).sort((a, b) => b.size - a.size);
             const r0 = innerRadius + ringWidth * depth;
@@ -765,11 +754,10 @@
                 // Skip segments too small to see (< 0.5 degree)
                 if (sweep < 0.008) { angle += sweep; return; }
 
-                // Color: L0 gets base hue, deeper levels inherit & vary lightness
-                const base = depth === 0 ? sunburstBaseColor(i) : baseHue;
-                const c = depth === 0 ? base : sunburstChildColor(base, depth, i);
-                const color = hslToString(c);
-                const alpha = Math.max(0.55, 0.92 - depth * 0.05);
+                // Each child gets its own color from the palette based on sibling index
+                const base = sunburstBaseColor(i);
+                const color = hslToString(base);
+                const alpha = Math.max(0.55, 0.92 - depth * 0.04);
 
                 drawArc(cx, cy, r0, r1, angle + GAP, angle + sweep - GAP, color, alpha);
                 state.sunburstRings.push({ cx, cy, r0, r1, startAngle: angle, endAngle: angle + sweep, data: child, level: depth, color });
@@ -777,14 +765,14 @@
                 // Recurse into children if we have cached data
                 const childData = state.treeCache[child.path];
                 if (childData && childData.children && childData.children.length > 0) {
-                    drawLevel(childData.children, childData.size || child.size, angle, angle + sweep, depth + 1, depth === 0 ? base : baseHue);
+                    drawLevel(childData.children, childData.size || child.size, angle, angle + sweep, depth + 1);
                 }
 
                 angle += sweep;
             });
         }
 
-        drawLevel(rootData.children, totalSize, -Math.PI / 2, Math.PI * 1.5, 0, null);
+        drawLevel(rootData.children, totalSize, -Math.PI / 2, Math.PI * 1.5, 0);
 
         // Center circle with radial gradient
         const centerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, innerRadius - 2);
