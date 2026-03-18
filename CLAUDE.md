@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What is ddcleaner
+## What is mangetout
 
 A DaisyDisk-inspired disk usage analyzer: Rust backend with parallel filesystem scanning, serving an embedded single-page web UI with sunburst chart visualization.
 

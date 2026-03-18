@@ -1,4 +1,4 @@
-// ddcleaner — Redesigned UI
+// mangetout — Redesigned UI
 (function() {
     'use strict';
 
@@ -1155,15 +1155,15 @@
 
     // --- Theme toggle ---
     const themeIcon = $('themeIcon');
-    state.isDark = localStorage.getItem('ddcleaner-theme') !== 'light';
-    if (!localStorage.getItem('ddcleaner-theme')) {
+    state.isDark = localStorage.getItem('mangetout-theme') !== 'light';
+    if (!localStorage.getItem('mangetout-theme')) {
         state.isDark = !window.matchMedia('(prefers-color-scheme: light)').matches;
     }
 
     function applyTheme() {
         document.body.classList.toggle('light', !state.isDark);
         themeIcon.innerHTML = state.isDark ? ICONS.moon : ICONS.sun;
-        localStorage.setItem('ddcleaner-theme', state.isDark ? 'dark' : 'light');
+        localStorage.setItem('mangetout-theme', state.isDark ? 'dark' : 'light');
     }
     applyTheme();
 

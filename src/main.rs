@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Parser)]
-#[command(name = "ddcleaner", version = "1.0.0", about = "Blazing fast disk usage analyzer")]
+#[command(name = "mangetout", version = "1.0.0", about = "Blazing fast disk usage analyzer")]
 struct Args {
     /// Path to scan (optional — shows volume picker if omitted)
     path: Option<String>,
@@ -29,7 +29,7 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
-    println!("ddcleaner v1.0.0 — read-only disk analyzer");
+    println!("mangetout v1.0.0 — what's eating your disk?");
 
     let shared_tree: tree::SharedTree;
 
